@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.agno.com)",
+      "WebSearch",
+      "WebFetch(domain:www.agno.com)"
+    ]
+  }
+}

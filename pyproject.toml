@@ -1,0 +1,44 @@
+[project]
+name = "production-rag"
+version = "1.0.0"
+description = "PDF-to-RAG pipeline: extract content from PDFs using vision models and query with LLM agents"
+requires-python = ">=3.11"
+authors = [
+    {name = "00SEC Ghana"}
+]
+readme = {text = "", content-type = "text/markdown"}
+license = "MIT"
+keywords = ["rag", "ai", "pdf", "vision", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = [
+    "pdf2image",
+    "requests",
+    "python-dotenv>=1.2.1",
+    "agno>=2.5.0",
+    "openai>=2.6.1",
+    "qdrant-client",
+    "fastembed",
+    "chonkie[st]",
+    "ragas",
+    "nest-asyncio>=1.6.0",
+    "mlflow[genai]>=3.6.0",
+    "opentelemetry-exporter-otlp>=1.39.1",
+    "openinference-instrumentation-agno>=0.1.27",
+    "cohere"
+]
+
+[project.scripts]
+rag-cli = "production_rag.cli:main"
+rag-ingest = "production_rag.ingestion.run_pipeline:run_ingestion"
+rag-eval = "production_rag.eval.ragas_eval:run_evaluation"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

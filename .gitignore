@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# MLflow
+mlflow.db
+mlruns/
+
+# Prometheus (contains credentials)
+prometheus.yml
+
+# Generated images
+output_images/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

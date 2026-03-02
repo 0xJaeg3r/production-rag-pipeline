@@ -1,0 +1,42 @@
+[
+  {
+    "question": "According to The Year in Numbers, what was the Bank's Medium-Term Inflation Target, and how did it compare to the actual Headline Inflation for end-December 2024?",
+    "reference": "The Medium-Term Inflation Target was 8±2%, whereas the actual Headline Inflation recorded was 23.8%"
+  },
+  {
+    "question": "As part of its 2024 Corporate Social Responsibility activities in the health sector, what specific piece of medical equipment did the Bank of Ghana help the Takoradi Air Force Base Medical Centre purchase?",
+    "reference": "The Bank provided financial assistance to purchase a 13-part Mindray BC20 Fully Automatic Haematology Analyser"
+  },
+  {
+    "question": "Following the implementation of smart sorting and the Clean Note Directive, what exact level of counterfeiting did the Bank of Ghana report in 2024?",
+    "reference": "The Bank maintained a counterfeiting level of exactly seven counterfeits per million genuine banknotes in circulation"
+  },
+  {
+    "question": "What was the total volume of e-zwich transactions in 2024, and by what percentage did the total value of these transactions increase compared to 2023?",
+    "reference": "The total volume of e-zwich transactions was 9,625,110. The total value of these transactions increased by 89.4% (to GH¢37,884 million)"
+  },
+  {
+    "question": "On what exact date was the Bank of Ghana established, and which specific legislation currently supersedes its founding ordinance?",
+    "reference": "The Bank of Ghana was established on 4th March, 1957. The 1957 Ordinance has since been superseded by the Bank of Ghana Act, 2002 (Act 612) as amended"
+  },
+  {
+    "question": "According to the Financial Soundness Indicators, how did the Non-Performing Loan (NPL) ratio for the banking industry change from 2023 to 2024?",
+    "reference": "The NPL ratio increased from 20.58% in 2023 to 21.79% at the end of December 2024"
+  },
+  {
+    "question": "What was the total value of gross loans and advances for the banking industry at the end of December 2024?",
+    "reference": "Gross loans and advances went up by 24.1% to GH¢95.5 billion at end-December 2024. (Note: The RAG should be able to distinguish between gross loans and net loans, which was GH¢79.29 billion)"
+  },
+  {
+    "question": "How much did the Bank of Ghana record in negative equity at the end of 2024?",
+    "reference": "The Bank of Ghana and its subsidiaries recorded a negative equity of GH¢59.91 billion (or GH¢59.92 billion as stated in the auditor's report)"
+  },
+  {
+    "question": "Trace the Bank of Ghana's Monetary Policy Rate (MPR) decisions chronologically throughout 2024. How did the MPC justify its specific decisions in January and September compared to the rest of the year, and how did the overall monetary policy stance reflect in the total cost of Open Market Operations (OMO) in the 2024 financial statements?",
+    "reference": "Timeline & Justification: In January, the MPR was decreased by 100 basis points to 29.0% because the balance of risks had tilted toward growth. In March, May, and July, it was maintained at 29.0% because the pace of disinflation had slowed and inflation risks remained elevated. In September, it was cut by 200 basis points to 27.0% because inflation had declined for five consecutive months, indicating the disinflation process was on track. In November, it was maintained at 27.0% due to emerging risks from food prices. Financial Impact: To support this tight monetary policy stance and mop up excess liquidity for the disinflation process, the total cost of Open Market Operations (OMO) increased from GH¢8.37 billion in 2023 to GH¢8.60 billion in 2024"
+  },
+  {
+    "question": "How did the Bank of Ghana handle the accounting treatment and subsequent restatement for government securities in 2023 specifically regarding the calculation of interest income and impairment loss? What was the net impact of this restatement on the 2023 carrying amount of government securities for the Bank?",
+    "reference": "In 2023, the Bank incorrectly recognized interest income on government securities using contractual coupon rates instead of the effective interest rate. Consequently, immediately before the recognition of the new government securities during the debt exchange, the carrying amount of the securities was understated, and the related impairment loss was overstated. To correct this, the 2023 figures were restated. The net impact of this restatement for the Bank (stand-alone) was an increase in the 2023 carrying amount of Government Securities (Current) from the originally signed GH¢58.29 billion to a restated amount of GH¢59.35 billion"
+  }
+]
