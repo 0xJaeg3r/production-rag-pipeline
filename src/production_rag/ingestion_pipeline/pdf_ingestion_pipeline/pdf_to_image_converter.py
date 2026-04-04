@@ -1,6 +1,5 @@
 """Convert PDF pages to images."""
 
-import os
 from pathlib import Path
 
 from pdf2image import convert_from_path, pdfinfo_from_path
@@ -19,12 +18,12 @@ def pdf_to_images(pdf_path, output_folder="pdf_images", page_number=None, dpi=30
     Returns:
         list: Paths of saved image files.
     """
-    Path(output_folder).mkdir(parents=True, exist_ok=True)
-
     pdf_name = Path(pdf_path).stem
+    output_folder = Path(output_folder) / pdf_name
+    output_folder.mkdir(parents=True, exist_ok=True)
 
     # Skip conversion if all pages already exist
-    existing = sorted(Path(output_folder).glob(f"{pdf_name}_page_*.png"))
+    existing = sorted(output_folder.glob(f"{pdf_name}_page_*.png"))
     if existing:
         total_pages = pdfinfo_from_path(pdf_path)["Pages"]
         if len(existing) >= total_pages:
@@ -42,7 +41,7 @@ def pdf_to_images(pdf_path, output_folder="pdf_images", page_number=None, dpi=30
                 pdf_path, dpi=dpi, first_page=page_number, last_page=page_number
             )
 
-            output_path = os.path.join(output_folder, f"{pdf_name}_page_{page_number}.png")
+            output_path = str(output_folder / f"{pdf_name}_page_{page_number}.png")
             images[0].save(output_path, "PNG")
             saved_files.append(output_path)
             print(f"Saved: {output_path}")
@@ -51,8 +50,8 @@ def pdf_to_images(pdf_path, output_folder="pdf_images", page_number=None, dpi=30
             images = convert_from_path(pdf_path, dpi=dpi)
 
             for i, image in enumerate(images, start=1):
-                output_path = os.path.join(output_folder, f"{pdf_name}_page_{i}.png")
-                if os.path.exists(output_path):
+                output_path = str(output_folder / f"{pdf_name}_page_{i}.png")
+                if Path(output_path).exists():
                     saved_files.append(output_path)
                     continue
                 image.save(output_path, "PNG")

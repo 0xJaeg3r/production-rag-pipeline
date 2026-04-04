@@ -4,6 +4,9 @@ embedder:
 
 vision:
   model: "Qwen/Qwen3-VL-8B-Instruct"
+  prompt: "Extract all the information from the image in paragraph manner. No markdown or No markup or no bullet points."
 
 pipeline:
   max_workers: 2
+  output_store: "output_store"
+  output_images: "output_images"

@@ -1,103 +1,195 @@
-"""Ingestion orchestrator: PDF → Images → Vision LLM → Qdrant."""
+"""Ingestion orchestrator: PDF -> Extract -> Index.
 
-import threading
+Two decoupled steps:
+  1. Extract: PDF -> images -> vision LLM -> cached page JSONs
+  2. Index:   cached page JSONs -> chunker -> Qdrant
+"""
+
+import argparse
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from pdf2image import pdfinfo_from_path
+
+from production_rag.ingestion_pipeline.manifest import Manifest
 from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.pdf_to_image_converter import pdf_to_images
 from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.vision_client import VLLMVisionClient
 from production_rag.ingestion_pipeline.chunker import ingest_data_to_store
-from production_rag.ingestion_pipeline.config.config_loader import max_workers
+from production_rag.ingestion_pipeline.config.config_loader import (
+    max_workers, output_store, output_images, vision_prompt,
+)
+
+_store_path = Path(output_store)
+_images_path = Path(output_images)
 
 
-def run_ingestion(pdf_dir=str(Path(__file__).resolve().parent / "pdf-store"), output_dir="output_images"):
-    """Run the full ingestion pipeline. Returns dict with ingested/failed counts."""
-    pdf_store = Path(pdf_dir)
-    pdf_files = list(pdf_store.glob("*.pdf"))
+def _page_json_path(pdf_stem: str, page_num: int) -> Path:
+    return _store_path / pdf_stem / f"page_{page_num}.json"
+
+
+# --- Step 1: Extract ---
+
+def run_extraction(pdf_dir: Path | None = None) -> dict:
+    """PDF -> images -> vision LLM -> page JSONs."""
+    pdf_dir = pdf_dir or Path(__file__).resolve().parent / "document-store"
+    pdf_files = list(pdf_dir.glob("*.pdf"))
 
     if not pdf_files:
-        print(f"No PDFs found in {pdf_store}")
-        return {"ingested": 0, "failed": 0}
+        print(f"No PDFs found in {pdf_dir}")
+        return {"extracted": 0, "failed": 0, "skipped": 0}
 
-    # Tracking logs
-    ingested_log = Path(output_dir) / ".ingested.log"
-    failed_log = Path(output_dir) / ".failed.log"
-
-    ingested = set()
-    if ingested_log.exists():
-        ingested = set(ingested_log.read_text().strip().splitlines())
-    if failed_log.exists():
-        failed_log.unlink()
-
+    _store_path.mkdir(parents=True, exist_ok=True)
+    manifest = Manifest(_store_path)
     client = VLLMVisionClient()
-    failed_pages = []
-    log_lock = threading.Lock()
 
-    def process_page(image_path, page_num, pdf_name):
-        print(f"\nProcessing: {image_path}")
-        try:
-            response = client.chat_with_local_image(
-                text_prompt="Extract all the information from the image in paragraph manner. No markdown or No markup or no bullet points.",
-                image_path=image_path,
-            )
-
-            if response:
-                text_response = client.extract_response_text(response)
-                if text_response:
-                    ingest_data_to_store(
-                        text_response,
-                        meta_data={
-                            "source_file": pdf_name,
-                            "page_number": page_num,
-                        },
-                    )
-                    with log_lock:
-                        with open(ingested_log, "a") as f:
-                            f.write(f"{image_path}\n")
-                    return None
-                else:
-                    print(f"No text extracted from {image_path}")
-                    return image_path
-            else:
-                print(f"No response from vision model for {image_path}")
-                return image_path
-        except Exception as e:
-            print(f"Error processing {image_path}: {e}")
-            return image_path
+    totals = {"extracted": 0, "failed": 0, "skipped": 0}
 
     for pdf_path in pdf_files:
-        print(f"\nConverting: {pdf_path.name}")
-        image_paths = pdf_to_images(str(pdf_path), output_folder=output_dir)
+        pdf_name = pdf_path.name
+        pdf_stem = pdf_path.stem
+        total_pages = pdfinfo_from_path(str(pdf_path))["Pages"]
 
-        pages_to_process = []
-        for image_path in image_paths:
-            if image_path in ingested:
-                print(f"\nSkipping (already ingested): {image_path}")
-                continue
-            page_num = int(image_path.rsplit("_page_", 1)[-1].replace(".png", ""))
-            pages_to_process.append((image_path, page_num, pdf_path.name))
+        manifest.register_pdf(pdf_name, total_pages)
+
+        print(f"\nConverting: {pdf_name}")
+        image_paths = pdf_to_images(str(pdf_path), output_folder=str(_images_path))
+
+        page_to_image = {}
+        for img_path in image_paths:
+            page_num = int(img_path.rsplit("_page_", 1)[-1].replace(".png", ""))
+            page_to_image[page_num] = img_path
+
+        pages_to_extract = manifest.pages_needing_extraction(pdf_name, total_pages)
+        skipped = total_pages - len(pages_to_extract)
+        totals["skipped"] += skipped
+
+        if not pages_to_extract:
+            print(f"All {total_pages} pages already extracted for {pdf_name}")
+            continue
+
+        print(f"Extracting {len(pages_to_extract)} pages ({skipped} skipped)")
+
+        def _extract_page(page_num, _pdf_name=pdf_name, _pdf_stem=pdf_stem):
+            image_path = page_to_image.get(page_num)
+            if not image_path:
+                print(f"No image found for {_pdf_name} page {page_num}")
+                manifest.mark_failed(_pdf_name, page_num)
+                return False
+
+            print(f"\nExtracting: {_pdf_name} page {page_num}")
+            response = client.chat_with_local_image(vision_prompt, image_path)
+            text = client.extract_response_text(response) if response else None
+
+            if not text:
+                print(f"No text extracted from {_pdf_name} page {page_num}")
+                manifest.mark_failed(_pdf_name, page_num)
+                return False
+
+            client.save_extraction(
+                text=text,
+                output_path=_page_json_path(_pdf_stem, page_num),
+                source_file=_pdf_name,
+                page_number=page_num,
+            )
+            manifest.mark_succeeded(_pdf_name, page_num)
+            return True
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(process_page, img, num, name): img
-                for img, num, name in pages_to_process
+                executor.submit(_extract_page, p): p
+                for p in pages_to_extract
             }
             for future in as_completed(futures):
-                failed = future.result()
-                if failed:
-                    failed_pages.append(failed)
+                if future.result():
+                    totals["extracted"] += 1
+                else:
+                    totals["failed"] += 1
 
-    if failed_pages:
-        with open(failed_log, "w") as f:
-            for page in failed_pages:
-                f.write(f"{page}\n")
-        print(f"\nFailed pages ({len(failed_pages)}) — see {failed_log}:")
-        for page in failed_pages:
-            print(f"  - {page}")
+    print(f"\nExtraction complete: {totals}")
+    return totals
 
-    total_ingested = len(pages_to_process) - len(failed_pages)
-    return {"ingested": total_ingested, "failed": len(failed_pages)}
+
+# --- Step 2: Index ---
+
+def run_indexing() -> dict:
+    """Read cached page JSONs -> chunker -> Qdrant."""
+    manifest = Manifest(_store_path)
+    totals = {"indexed": 0, "skipped": 0, "failed": 0}
+
+    for pdf_name in manifest.all_pdfs():
+        pdf_stem = Path(pdf_name).stem
+        pages_to_index = manifest.pages_needing_indexing(pdf_name)
+        skipped = len(manifest.indexed_pages(pdf_name))
+        totals["skipped"] += skipped
+
+        if not pages_to_index:
+            print(f"All pages already indexed for {pdf_name}")
+            continue
+
+        print(f"\nIndexing {len(pages_to_index)} pages for {pdf_name} ({skipped} skipped)")
+
+        for page_num in pages_to_index:
+            json_path = _page_json_path(pdf_stem, page_num)
+            if not json_path.exists():
+                print(f"Missing JSON for {pdf_name} page {page_num}")
+                totals["failed"] += 1
+                continue
+
+            with open(json_path) as f:
+                page_data = json.load(f)
+
+            try:
+                ingest_data_to_store(
+                    text=page_data["text"],
+                    meta_data={
+                        "source_file": page_data["source_file"],
+                        "page_number": page_data["page_number"],
+                    },
+                )
+                manifest.mark_indexed(pdf_name, page_num)
+                totals["indexed"] += 1
+            except Exception as e:
+                print(f"Error indexing {pdf_name} page {page_num}: {e}")
+                totals["failed"] += 1
+
+    print(f"\nIndexing complete: {totals}")
+    return totals
+
+
+# --- Full pipeline ---
+
+def run_ingestion(pdf_dir=None) -> dict:
+    """Run both steps: extract then index."""
+    extract_result = run_extraction(Path(pdf_dir) if pdf_dir else None)
+    index_result = run_indexing()
+    return {
+        "extracted": extract_result["extracted"],
+        "indexed": index_result["indexed"],
+        "failed": extract_result["failed"] + index_result["failed"],
+    }
 
 
 if __name__ == "__main__":
-    run_ingestion()
+    parser = argparse.ArgumentParser(description="PDF ingestion pipeline")
+    parser.add_argument(
+        "--step", choices=["extract", "index", "both"], default="both",
+        help="Which pipeline step to run",
+    )
+    parser.add_argument(
+        "--clear-indexed", action="store_true",
+        help="Clear all indexed markers (for Qdrant wipe recovery)",
+    )
+    args = parser.parse_args()
+
+    if args.clear_indexed:
+        _store_path.mkdir(parents=True, exist_ok=True)
+        Manifest(_store_path).clear_indexed()
+        print("Cleared all indexed markers.")
+
+    if args.step == "extract":
+        run_extraction()
+    elif args.step == "index":
+        run_indexing()
+    else:
+        run_ingestion()

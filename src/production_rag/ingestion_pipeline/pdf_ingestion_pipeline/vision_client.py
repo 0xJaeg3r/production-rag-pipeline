@@ -1,6 +1,8 @@
 """Client for calling vLLM Vision API endpoint."""
 
+import json
 import os
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv, find_dotenv
@@ -83,3 +85,14 @@ class VLLMVisionClient:
         if response and "choices" in response:
             return response["choices"][0]["message"]["content"]
         return None
+
+    def save_extraction(self, text, output_path, source_file, page_number):
+        """Save extracted text to a JSON file."""
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump({
+                "source_file": source_file,
+                "page_number": page_number,
+                "text": text,
+            }, f, indent=2)

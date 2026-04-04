@@ -20,10 +20,10 @@ PDF → Images → Vision LLM (text extraction) → Chunking & Embedding → Qdr
 
 There are three main stages:
 
-1. **Ingestion** (getting data into the system)
-   - Each PDF page is converted to an image
-   - A vision model reads the image and extracts the text (this handles tables, charts, and layouts that regular PDF parsers miss)
-   - The text is split into smaller chunks and stored as vectors in Qdrant
+1. **Ingestion** (getting data into the system — two decoupled steps)
+   - **Extract**: Each PDF page is converted to an image, a vision model reads it and extracts text, and the result is cached as a JSON file
+   - **Index**: Cached text is split into semantic chunks and stored as vectors in Qdrant
+   - If Qdrant is wiped, re-indexing reads from the cache — no expensive vision LLM calls needed
 
 2. **Querying** (asking questions)
    - Your question gets embedded into the same vector space
@@ -42,28 +42,33 @@ There are three main stages:
 production-rag/
 ├── pyproject.toml
 ├── .env / .env.example
-├── data/
-│   └── eval_questions.json           # Questions with correct answers for evaluation
 ├── src/
-│   ├── pdf-store/                    # Drop your PDFs here
-│   └── production_rag/              # Main Python package
-│       ├── config.py                 # All settings in one place
-│       ├── cli.py                    # Chat interface
-│       ├── ingestion/                # PDF → text → vectors
-│       ├── agent/                    # The RAG agent that answers questions
-│       ├── integrations/             # MLflow tracing and LLM routing
-│       ├── eval/                     # Quality measurement with RAGAS
-│       └── utils/                    # Helper functions
+│   └── production_rag/
+│       ├── cli.py                        # Chat interface
+│       ├── ingestion_pipeline/           # PDF → text → vectors
+│       │   ├── config/                   # YAML config + loader
+│       │   ├── pdf_ingestion_pipeline/   # PDF converter + vision client
+│       │   ├── docx_ingestion_pipeline/  # (future) DOCX extraction
+│       │   ├── document-store/           # Drop your PDFs here
+│       │   ├── manifest.py               # Tracks extraction/indexing state
+│       │   ├── chunker.py                # Semantic chunking + Qdrant storage
+│       │   └── run_pipeline.py           # Pipeline orchestrator
+│       ├── agent/                        # The RAG agent that answers questions
+│       │   └── config/                   # YAML config + loader
+│       ├── integrations/                 # MLflow tracing and LLM routing
+│       │   └── config/                   # YAML config + loader
+│       ├── rag_evaluation/               # Quality measurement with RAGAS
+│       │   └── config/                   # YAML config + loader
+│       └── utils/                        # Helper functions
 ├── docker-compose-prometheus-grafana.yaml
 ├── prometheus.yml.example
 └── grafana.json
 ```
 
-Each module has its own README that explains what it does and why:
-- [ingestion/](src/production_rag/ingestion/README.md) — How PDFs become searchable vectors
+Each module has its own README and config:
+- [ingestion_pipeline/](src/production_rag/ingestion_pipeline/README.md) — How PDFs become searchable vectors
 - [agent/](src/production_rag/agent/README.md) — How the RAG agent retrieves and answers
 - [integrations/](src/production_rag/integrations/README.md) — How MLflow tracks everything
-- [eval/](src/production_rag/eval/README.md) — How to measure if your RAG is working well
 - [utils/](src/production_rag/utils/README.md) — Shared helper functions
 
 ## Tech Stack
@@ -84,7 +89,7 @@ Each module has its own README that explains what it does and why:
 ## Prerequisites
 
 - Python >= 3.11
-- A RunPod instance running vLLM with `Qwen/Qwen3-VL-8B-Instruct` (only needed for ingestion) — see [RunPod setup](src/production_rag/ingestion/README.md#runpod-setup-vision-model)
+- A RunPod instance running vLLM with `Qwen/Qwen3-VL-8B-Instruct` (only needed for extraction) — see [RunPod setup](src/production_rag/ingestion_pipeline/README.md#runpod-setup-vision-model)
 - A Qdrant Cloud cluster (or local Qdrant instance)
 - An OpenAI API key
 - A Cohere API key (for reranking)
@@ -160,14 +165,24 @@ mlflow server --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 50
 
 ### Ingestion — Getting your PDFs into the system
 
-Place PDF files in `src/pdf-store/`, then run:
+Place PDF files in `src/production_rag/ingestion_pipeline/document-store/`, then run:
 
 ```bash
-rag-ingest
-# or: python -m production_rag.ingestion.run_pipeline
+# Full pipeline (extract + index)
+python -m production_rag.ingestion_pipeline.run_pipeline
+
+# Extract only (no Qdrant needed)
+python -m production_rag.ingestion_pipeline.run_pipeline --step extract
+
+# Index only (from cached JSONs, no vision LLM needed)
+python -m production_rag.ingestion_pipeline.run_pipeline --step index
+
+# Re-index after Qdrant wipe
+python -m production_rag.ingestion_pipeline.run_pipeline --clear-indexed
+python -m production_rag.ingestion_pipeline.run_pipeline --step index
 ```
 
-This converts each PDF page to an image, sends it to the vision model for text extraction, chunks the text, and stores the vectors in Qdrant. Pages that are already ingested are skipped, so you can safely rerun if the process gets interrupted.
+Extraction sends each page to the vision model and caches the result as JSON in `output_store/`. Indexing reads from the cache, chunks the text, and stores vectors in Qdrant. Already-extracted and already-indexed pages are skipped automatically. Failed pages are retried on the next run.
 
 ### Querying — Asking questions
 
@@ -182,7 +197,7 @@ This starts an interactive chat. Type a question, and the agent retrieves releva
 
 ```bash
 rag-eval
-# or: python -m production_rag.eval.ragas_eval
+# or: python -m production_rag.rag_evaluation.ragas_eval
 ```
 
 Runs 10 questions with known correct answers through the pipeline. RAGAS scores how faithful, relevant, and well-supported each answer is. Results appear in the MLflow UI under the Evaluations tab.
@@ -240,9 +255,11 @@ When you spin up a new RunPod instance, the proxy URL changes:
 ## Notes
 
 - The vision model runs on RunPod (GPU); everything else runs locally on CPU
-- The Qdrant collection is created automatically on first ingestion
-- Image conversion and page ingestion are both idempotent — safe to rerun
-- To re-ingest from scratch, delete `output_images/` and `output_images/.ingested.log`
+- The Qdrant collection is created automatically on first indexing
+- Extraction and indexing are both idempotent — safe to rerun
+- Progress is tracked in `output_store/manifest.json`
+- Extracted text is cached in `output_store/` as JSON — re-indexing after a Qdrant wipe is fast
+- Each module has its own `config/config.yaml` for static settings; secrets live in `.env`
 
 ## License
 

@@ -9,36 +9,46 @@ Most financial reports have complex tables, charts, footnotes, and multi-column 
 ## How it works
 
 ```
-PDF file → pdf_converter.py → page images (PNG)
-                                    |
-                          vision_client.py → raw text per page
-                                    |
-                             chunker.py → semantic chunks → Qdrant
+PDF file → pdf_to_image_converter.py → page images (PNG)
+                                           |
+                                 vision_client.py → extracted text → page JSONs (cached)
+                                           |
+                                    chunker.py → semantic chunks → Qdrant
 ```
 
-1. **PDF to images** — Each page becomes a high-resolution PNG. If the images already exist on disk, this step is skipped.
+The pipeline runs in two decoupled steps:
 
-2. **Image to text** — Each image is sent to a Qwen3-VL-8B vision model running on RunPod. The model extracts all the text content, preserving the meaning from tables and charts.
+1. **Extract** (PDF → images → vision LLM → cached page JSONs)
+   - Each PDF page becomes a high-resolution PNG, stored in `output_images/{pdf_name}/`
+   - Each image is sent to a Qwen3-VL-8B vision model running on RunPod
+   - Extracted text is cached as JSON in `output_store/{pdf_name}/page_N.json`
+   - Skips pages that already have a cached JSON
 
-3. **Text to vectors** — The extracted text is split into smaller, semantically meaningful chunks (not just fixed-size splits — related sentences stay together). Each chunk is embedded into a vector and stored in Qdrant for later retrieval.
+2. **Index** (cached page JSONs → chunks → Qdrant)
+   - Reads cached page JSONs from `output_store/`
+   - Splits text into semantic chunks and indexes into Qdrant
+   - Skips pages already marked as indexed in the manifest
+
+Progress is tracked in `output_store/manifest.json` — no more `.ingested.log` / `.failed.log`.
 
 ## Modules
 
-### `pdf_converter.py`
-Converts PDF pages to PNG images using `pdf2image` (requires poppler). Checks for existing images first so reruns are fast.
+### `pdf_to_image_converter.py`
+Converts PDF pages to PNG images using `pdf2image` (requires poppler). Images are stored in `output_images/{pdf_name}/`. Checks for existing images first so reruns are fast.
 
 ### `vision_client.py`
-Talks to the vLLM-hosted vision model. Converts local images to base64 and sends them via the OpenAI-compatible chat completions API. The model reads the image and returns the extracted text.
+Talks to the vLLM-hosted vision model. Converts local images to base64 and sends them via the OpenAI-compatible chat completions API. The model reads the image and returns the extracted text. Includes `save_extraction()` to persist results as JSON.
 
 ### `chunker.py`
 Takes the raw extracted text and splits it into chunks using Chonkie's semantic chunking (groups related sentences together, threshold 0.8) with overlap (100 characters of shared context between chunks so meaning isn't lost at boundaries). Each chunk becomes an Agno Document and gets stored in Qdrant.
 
 The Qdrant connection is **lazy** — it's not created when you import the module, only when you actually call `ingest_data_to_store()`. This avoids errors when importing the module in contexts where Qdrant isn't needed. MD5 hashing prevents the same content from being inserted twice.
 
+### `manifest.py`
+Thread-safe manifest that tracks extraction and indexing state per PDF in `output_store/manifest.json`. Replaces the old `.ingested.log` / `.failed.log` system. Supports clearing indexed markers for Qdrant wipe recovery.
+
 ### `run_pipeline.py`
-Orchestrates everything. Finds all PDFs in the `pdf-store/` directory, converts them, extracts text, and stores vectors. Pages are processed in parallel (default 2 workers) using a thread pool. Progress is tracked in log files so you can resume if the process is interrupted:
-- `.ingested.log` — pages successfully stored (skipped on rerun)
-- `.failed.log` — pages that failed (retried on next run)
+Orchestrates the two-step pipeline. Pages are extracted in parallel (default 2 workers) using a thread pool. Supports running steps independently via CLI flags.
 
 ## RunPod Setup (Vision Model)
 
@@ -82,12 +92,21 @@ VLLM_API_URL=https://your-pod-id-8000.proxy.runpod.net
 
 ## Usage
 
-```bash
-# Via console script
-rag-ingest
+Place PDFs in `document-store/` before running.
 
-# Via module
-python -m production_rag.ingestion.run_pipeline
+```bash
+# Full pipeline (extract + index)
+python -m production_rag.ingestion_pipeline.run_pipeline
+
+# Extract only (no Qdrant)
+python -m production_rag.ingestion_pipeline.run_pipeline --step extract
+
+# Index only (from cached JSONs)
+python -m production_rag.ingestion_pipeline.run_pipeline --step index
+
+# Re-index after Qdrant wipe
+python -m production_rag.ingestion_pipeline.run_pipeline --clear-indexed
+python -m production_rag.ingestion_pipeline.run_pipeline --step index
 ```
 
-Place PDFs in `src/pdf-store/` before running. Already-ingested pages are skipped automatically.
+Already-extracted pages are skipped automatically. Failed pages are retried on the next extraction run.

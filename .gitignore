@@ -29,3 +29,7 @@ output_images/
 # OS
 .DS_Store
 Thumbs.db
+
+/output_store
+**/document-store/*
+!**/document-store/.gitkeep
