@@ -30,7 +30,7 @@ from production_rag.integrations.mlflow import setup_mlflow
 
 JUDGE_MODEL = "openai:/gpt-4o-mini"
 
-DEFAULT_QUESTIONS_PATH = Path(__file__).resolve().parents[3] / "data" / "eval_questions.json"
+DEFAULT_QUESTIONS_PATH = Path(__file__).resolve().parent / "eval_questions.json"
 
 
 def run_evaluation(questions_path=None):

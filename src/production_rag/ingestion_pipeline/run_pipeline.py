@@ -4,9 +4,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from production_rag.ingestion.pdf_converter import pdf_to_images
-from production_rag.ingestion.vision_client import VLLMVisionClient
-from production_rag.ingestion.chunker import ingest_data_to_store
+from production_rag.ingestion_pipeline.pdf_converter import pdf_to_images
+from production_rag.ingestion_pipeline.vision_client import VLLMVisionClient
+from production_rag.ingestion_pipeline.chunker import ingest_data_to_store
 
 
 def run_ingestion(pdf_dir="src/pdf-store", output_dir="output_images", max_workers=2):

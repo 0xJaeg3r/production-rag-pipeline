@@ -15,7 +15,7 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class QdrantConfig:
-    url: str = os.getenv("QDRANT_URL", "http://localhost:6333")
+    url: str = os.getenv("QDRANT_URL")
     api_key: str = os.getenv("QDRANT_API_KEY", "")
     collection_name: str = os.getenv("COLLECTION_NAME", "")
 
