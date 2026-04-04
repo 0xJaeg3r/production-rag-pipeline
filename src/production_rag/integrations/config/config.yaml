@@ -1,0 +1,3 @@
+mlflow:
+  experiment_name: "RAG Agent"
+  gateway_endpoint: "open-ai"

@@ -5,24 +5,30 @@ from agno.knowledge.embedder.fastembed import FastEmbedEmbedder
 from agno.knowledge.reranker.cohere import CohereReranker
 from agno.vectordb.qdrant import Qdrant
 
-from production_rag.config import (
-    qdrant as qdrant_cfg,
-    embedder as embedder_cfg,
-    reranker as reranker_cfg,
-)
+import os
+
+from dotenv import load_dotenv, find_dotenv
+
+from production_rag.agent.config.config_loader import embedder, reranker
+
+load_dotenv(find_dotenv())
+
+qdrant_url = os.environ["QDRANT_URL"]
+qdrant_api_key = os.environ["QDRANT_API_KEY"]
+collection_name = os.environ["COLLECTION_NAME"]
 
 
 def create_knowledge_base() -> Knowledge:
     """Build embedder, reranker, Qdrant, and Knowledge from config."""
     _embedder = FastEmbedEmbedder(
-        id=embedder_cfg.model_id, dimensions=embedder_cfg.dimensions
+        id=embedder["model_id"], dimensions=embedder["dimensions"]
     )
-    _reranker = CohereReranker(model=reranker_cfg.model, top_n=reranker_cfg.top_n)
+    _reranker = CohereReranker(model=reranker["model"], top_n=reranker["top_n"])
 
     vector_db = Qdrant(
-        collection=qdrant_cfg.collection_name,
-        url=qdrant_cfg.url,
-        api_key=qdrant_cfg.api_key,
+        collection=collection_name,
+        url=qdrant_url,
+        api_key=qdrant_api_key,
         embedder=_embedder,
         reranker=_reranker,
     )

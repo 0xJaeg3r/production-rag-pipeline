@@ -4,12 +4,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from production_rag.ingestion_pipeline.pdf_converter import pdf_to_images
-from production_rag.ingestion_pipeline.vision_client import VLLMVisionClient
+from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.pdf_to_image_converter import pdf_to_images
+from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.vision_client import VLLMVisionClient
 from production_rag.ingestion_pipeline.chunker import ingest_data_to_store
+from production_rag.ingestion_pipeline.config.config_loader import max_workers
 
 
-def run_ingestion(pdf_dir="src/pdf-store", output_dir="output_images", max_workers=2):
+def run_ingestion(pdf_dir=str(Path(__file__).resolve().parent / "pdf-store"), output_dir="output_images"):
     """Run the full ingestion pipeline. Returns dict with ingested/failed counts."""
     pdf_store = Path(pdf_dir)
     pdf_files = list(pdf_store.glob("*.pdf"))

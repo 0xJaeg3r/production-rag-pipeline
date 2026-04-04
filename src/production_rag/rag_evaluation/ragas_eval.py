@@ -27,8 +27,7 @@ from mlflow.genai.scorers.ragas import (
 
 from production_rag.agent.rag_agent import create_rag_agent
 from production_rag.integrations.mlflow import setup_mlflow
-
-JUDGE_MODEL = "openai:/gpt-4o-mini"
+from production_rag.rag_evaluation.config.config_loader import judge_model
 
 DEFAULT_QUESTIONS_PATH = Path(__file__).resolve().parent / "eval_questions.json"
 
@@ -90,11 +89,11 @@ def run_evaluation(questions_path=None):
     print("Running RAGAS evaluation...\n")
 
     scorers = [
-        Faithfulness(model=JUDGE_MODEL),
-        AnswerRelevancy(model=JUDGE_MODEL),
-        ContextPrecision(model=JUDGE_MODEL),
-        ContextRecall(model=JUDGE_MODEL),
-        ContextEntityRecall(model=JUDGE_MODEL),
+        Faithfulness(model=judge_model),
+        AnswerRelevancy(model=judge_model),
+        ContextPrecision(model=judge_model),
+        ContextRecall(model=judge_model),
+        ContextEntityRecall(model=judge_model),
     ]
 
     os.environ["MLFLOW_GENAI_EVAL_MAX_WORKERS"] = "1"

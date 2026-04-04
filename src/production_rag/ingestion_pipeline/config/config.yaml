@@ -1,0 +1,9 @@
+embedder:
+  model_id: "BAAI/bge-base-en-v1.5"
+  dimensions: 768
+
+vision:
+  model: "Qwen/Qwen3-VL-8B-Instruct"
+
+pipeline:
+  max_workers: 2

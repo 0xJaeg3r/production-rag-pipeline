@@ -1,13 +1,21 @@
 """Chunking + Qdrant storage. Lazy connection — no import-time side effects."""
 
 import hashlib
+import os
 
 from agno.knowledge.document.base import Document
 from agno.knowledge.embedder.fastembed import FastEmbedEmbedder
 from agno.vectordb.qdrant import Qdrant
 from chonkie import Pipeline
+from dotenv import load_dotenv, find_dotenv
 
-from production_rag.config import qdrant as qdrant_cfg, embedder as embedder_cfg
+from production_rag.ingestion_pipeline.config.config_loader import embedder
+
+load_dotenv(find_dotenv())
+
+qdrant_url = os.environ["QDRANT_URL"]
+qdrant_api_key = os.environ["QDRANT_API_KEY"]
+collection_name = os.environ["COLLECTION_NAME"]
 
 _vector_db = None
 
@@ -16,12 +24,12 @@ def _get_vector_db() -> Qdrant:
     global _vector_db
     if _vector_db is None:
         _embedder = FastEmbedEmbedder(
-            id=embedder_cfg.model_id, dimensions=embedder_cfg.dimensions
+            id=embedder["model_id"], dimensions=embedder["dimensions"]
         )
         _vector_db = Qdrant(
-            collection=qdrant_cfg.collection_name,
-            url=qdrant_cfg.url,
-            api_key=qdrant_cfg.api_key,
+            collection=collection_name,
+            url=qdrant_url,
+            api_key=qdrant_api_key,
             embedder=_embedder,
         )
         _vector_db.create()
@@ -29,13 +37,12 @@ def _get_vector_db() -> Qdrant:
 
 
 def ingest_data_to_store(
-    text: str, source_name: str = None, meta_data: dict = None
+    text: str, meta_data: dict = None
 ) -> int:
     """Chunk text and store in Qdrant. Returns the number of chunks ingested."""
-    source_name = source_name or qdrant_cfg.collection_name
-    print(f"Indexing in Qdrant store in collection: {qdrant_cfg.collection_name}")
+    print(f"Indexing in Qdrant store in collection: {collection_name}")
 
-    base_meta = {"source": source_name}
+    base_meta = {"source": collection_name}
     if meta_data:
         base_meta.update(meta_data)
 
@@ -50,7 +57,7 @@ def ingest_data_to_store(
     documents = [
         Document(
             content=chunk.text,
-            name=source_name,
+            name=collection_name,
             meta_data=base_meta.copy(),
         )
         for chunk in result.chunks

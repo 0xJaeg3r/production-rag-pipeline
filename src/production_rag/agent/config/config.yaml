@@ -1,0 +1,11 @@
+llm:
+  model_id: "gpt-4o"
+  temperature: 0.4
+
+embedder:
+  model_id: "BAAI/bge-base-en-v1.5"
+  dimensions: 768
+
+reranker:
+  model: "rerank-v3.5"
+  top_n: 5
