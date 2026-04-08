@@ -2,7 +2,7 @@
 
 A complete, production-grade RAG (Retrieval-Augmented Generation) pipeline that you can learn from and adapt. It takes PDF documents, extracts their content using a vision model, stores it in a vector database, and lets you ask questions about it using an LLM — with full tracing, evaluation, and monitoring.
 
-Built around the Bank of Ghana Annual Report, but the approach works for any PDF-heavy domain.
+Built around the Bank of Ghana Annual Reports (2013–2024), but the approach works for any PDF-heavy domain.
 
 ## What is RAG?
 
@@ -14,6 +14,8 @@ RAG stands for Retrieval-Augmented Generation. Instead of asking an LLM to answe
 PDF → Images → Vision LLM (text extraction) → Chunking & Embedding → Qdrant Vector Store
                                                                               |
                                               User Query → Retrieval + Reranking → LLM → Answer
+                                                                              |
+                                                            Multi-Agent Team (Analyst + Chart)
                                                                               |
                                                                     MLflow (traces, eval)
 ```
@@ -29,7 +31,11 @@ There are three main stages:
    - Your question gets embedded into the same vector space
    - The most relevant chunks are retrieved from Qdrant
    - A reranker scores the chunks and picks the best ones
-   - The LLM reads those chunks and writes a grounded answer
+   - A coordinated team of agents processes the query:
+     - **Financial Analyst Agent** — retrieves data, extracts figures, provides citations
+     - **Chart Agent** — creates visualizations when the query calls for it
+     - **Team Coordinator** — routes queries to the right agent and combines responses
+   - Conversation history and user memories persist across sessions via PostgreSQL
 
 3. **Evaluation** (measuring quality)
    - A set of questions with known correct answers is run through the pipeline
@@ -44,7 +50,7 @@ production-rag/
 ├── .env / .env.example
 ├── src/
 │   └── production_rag/
-│       ├── cli.py                        # Chat interface
+│       ├── cli.py                        # Interactive chat interface
 │       ├── ingestion_pipeline/           # PDF → text → vectors
 │       │   ├── config/                   # YAML config + loader
 │       │   ├── pdf_ingestion_pipeline/   # PDF converter + vision client
@@ -53,12 +59,19 @@ production-rag/
 │       │   ├── manifest.py               # Tracks extraction/indexing state
 │       │   ├── chunker.py                # Semantic chunking + Qdrant storage
 │       │   └── run_pipeline.py           # Pipeline orchestrator
-│       ├── agent/                        # The RAG agent that answers questions
+│       ├── agent/                        # Multi-agent RAG team
+│       │   ├── rag_agent.py              # Single-agent factory (simple mode)
+│       │   ├── rag_agent_with_class.py   # Multi-agent team (full mode)
+│       │   ├── entrypoint.py             # FastAPI/AgentOS web service
+│       │   ├── knowledge.py              # Knowledge base (Qdrant + reranker)
+│       │   ├── prompts.py                # Original prompt instructions
+│       │   ├── promptsV2.py              # Specialized agent prompts
 │       │   └── config/                   # YAML config + loader
 │       ├── integrations/                 # MLflow tracing and LLM routing
 │       │   └── config/                   # YAML config + loader
 │       ├── rag_evaluation/               # Quality measurement with RAGAS
 │       │   └── config/                   # YAML config + loader
+│       ├── charts/                       # Generated visualization outputs
 │       └── utils/                        # Helper functions
 ├── docker-compose-prometheus-grafana.yaml
 ├── prometheus.yml.example
@@ -78,11 +91,13 @@ Each module has its own README and config:
 | PDF to Image | `pdf2image` (poppler) | Preserves tables/charts that text extractors miss |
 | Text Extraction | Qwen3-VL-8B via vLLM on RunPod | Vision model reads images like a human would |
 | Chunking | `chonkie` (semantic) | Keeps related sentences together, not just fixed-size splits |
-| Embeddings | `BAAI/bge-base-en-v1.5` via FastEmbed | Converts text to vectors for similarity search |
+| Embeddings | `snowflake/snowflake-arctic-embed-l` via FastEmbed | 1024-dim vectors for similarity search |
 | Reranker | Cohere `rerank-v3.5` | Re-scores retrieved chunks so the best ones come first |
 | Vector Store | Qdrant Cloud | Stores and searches vectors at scale |
-| Query LLM | OpenAI (direct or via MLflow Gateway) | Generates the final answer from retrieved context |
-| Agent Framework | Agno | Wires the LLM, knowledge base, and tools together |
+| Query LLM | GPT-5.2 (default), also supports Claude, DeepSeek | Generates the final answer from retrieved context |
+| Agent Framework | Agno (Teams + Agents) | Multi-agent coordination, knowledge tools, visualization |
+| Storage | PostgreSQL (Neon) | Conversation history, user memories, knowledge metadata |
+| Web Service | FastAPI via AgentOS | REST API for serving the agent team |
 | Tracing & Eval | MLflow + RAGAS | Tracks every query and measures answer quality |
 | Monitoring | Prometheus + Grafana | System metrics for Qdrant, vLLM, and infrastructure |
 
@@ -91,6 +106,7 @@ Each module has its own README and config:
 - Python >= 3.11
 - A RunPod instance running vLLM with `Qwen/Qwen3-VL-8B-Instruct` (only needed for extraction) — see [RunPod setup](src/production_rag/ingestion_pipeline/README.md#runpod-setup-vision-model)
 - A Qdrant Cloud cluster (or local Qdrant instance)
+- A PostgreSQL database (e.g. Neon) for conversation history and user memories
 - An OpenAI API key
 - A Cohere API key (for reranking)
 - MLflow server — see [MLflow setup](src/production_rag/integrations/README.md)
@@ -146,6 +162,8 @@ OPENAI_API_KEY=your-openai-api-key
 COHERE_API_KEY=your-cohere-api-key
 MLFLOW_TRACKING_URI=http://localhost:5000
 MLFLOW_EXPERIMENT_NAME=RAG Agent
+DATABASE_URL=postgresql+asyncpg://user:pass@host/dbname
+RAG_DATA_DIR=/path/to/local/cache
 ```
 
 5. **Start MLflow** (for tracing and evaluation)

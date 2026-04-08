@@ -19,9 +19,25 @@ from production_rag.ingestion_pipeline.chunker import ingest_data_to_store
 from production_rag.ingestion_pipeline.config.config_loader import (
     max_workers, output_store, output_images, vision_prompt,
 )
+# from agno.db.sqlite import SqliteDb
+from agno.db.postgres import PostgresDb
+from agno.knowledge.content import ContentStatus
+from agno.db.schemas.knowledge import KnowledgeRow
+import hashlib
+import time
+import os
+
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 
 _store_path = Path(output_store)
 _images_path = Path(output_images)
+
+_RAG_DIR = Path(os.environ.get("RAG_DATA_DIR", str(Path.home() / ".production-rag")))
+_RAG_DIR.mkdir(exist_ok=True)
+# _contents_db = SqliteDb(db_file=str(_RAG_DIR / "knowledge_contents.db"))
+_sync_db_url = os.environ["DATABASE_URL"].replace("+psycopg_async", "+psycopg")
+_contents_db = PostgresDb(db_url=_sync_db_url, db_schema="knowledge")
 
 
 def _page_json_path(pdf_stem: str, page_num: int) -> Path:
@@ -140,12 +156,33 @@ def run_indexing() -> dict:
                 page_data = json.load(f)
 
             try:
+                meta = {
+                    "source_file": page_data["source_file"],
+                    "page_number": page_data["page_number"],
+                }
                 ingest_data_to_store(
                     text=page_data["text"],
-                    meta_data={
-                        "source_file": page_data["source_file"],
-                        "page_number": page_data["page_number"],
-                    },
+                    meta_data=meta,
+                )
+                content_hash = hashlib.md5(
+                    f"{pdf_name}_page_{page_num}".encode()
+                ).hexdigest()
+                now = int(time.time())
+                _contents_db.upsert_knowledge_content(
+                    knowledge_row=KnowledgeRow(
+                        id=content_hash,
+                        name=f"{pdf_name}_page_{page_num}",
+                        description="",
+                        metadata=meta,
+                        type="Text",
+                        size=len(page_data["text"]),
+                        linked_to="",
+                        access_count=0,
+                        status=ContentStatus.COMPLETED,
+                        status_message="",
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
                 manifest.mark_indexed(pdf_name, page_num)
                 totals["indexed"] += 1

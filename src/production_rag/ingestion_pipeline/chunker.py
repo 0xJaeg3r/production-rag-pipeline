@@ -49,8 +49,8 @@ def ingest_data_to_store(
     result = (
         Pipeline()
         .process_with("text")
-        .chunk_with("semantic", threshold=0.8)
-        .refine_with("overlap", context_size=100)
+        .chunk_with("semantic", threshold=0.6)
+        .refine_with("overlap", context_size=300)
         .run(texts=text)
     )
 

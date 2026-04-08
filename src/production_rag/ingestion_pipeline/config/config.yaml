@@ -1,6 +1,6 @@
 embedder:
-  model_id: "BAAI/bge-base-en-v1.5"
-  dimensions: 768
+  model_id: "snowflake/snowflake-arctic-embed-l"
+  dimensions: 1024
 
 vision:
   model: "Qwen/Qwen3-VL-8B-Instruct"

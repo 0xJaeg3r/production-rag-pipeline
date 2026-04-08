@@ -12,15 +12,15 @@ from dotenv import load_dotenv, find_dotenv
 from production_rag.integrations.mlflow import setup_mlflow, get_gateway_llm
 from production_rag.agent.config.config_loader import llm
 from agno.models.openai import OpenAIChat
-
+from agno.tools.knowledge import KnowledgeTools
 load_dotenv(find_dotenv())
 
-def create_rag_agent(autolog: bool = True) -> Agent:
+def create_rag_agent(autolog: bool = False) -> Agent:
     """Create and return the RAG agent.
 
     Nothing happens at import time — call this function to wire everything up.
     """
-    setup_mlflow(autolog=autolog)
+    #setup_mlflow(autolog=autolog)
     kb = create_knowledge_base()
     #llm = get_gateway_llm("open-ai")
     "Use llm from your env variables"
@@ -37,3 +37,6 @@ def create_rag_agent(autolog: bool = True) -> Agent:
         enable_agentic_knowledge_filters=True,
         instructions=AGENT_INSTRUCTIONS,
     )
+
+
+
