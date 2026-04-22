@@ -1,69 +1,97 @@
-"""Chunking + Qdrant storage. Lazy connection — no import-time side effects."""
+"""Agno-managed ingestion for raw text into Qdrant."""
 
-import hashlib
 import os
+from functools import lru_cache
+from typing import Optional
 
-from agno.knowledge.document.base import Document
+from dotenv import find_dotenv, load_dotenv
+
+from agno.db.postgres.postgres import PostgresDb  # optional, but recommended
+from agno.knowledge.chunking.semantic import SemanticChunking
 from agno.knowledge.embedder.fastembed import FastEmbedEmbedder
+from agno.knowledge.knowledge import Knowledge
+from agno.knowledge.reader.text_reader import TextReader
 from agno.vectordb.qdrant import Qdrant
-from chonkie import Pipeline
-from dotenv import load_dotenv, find_dotenv
 
 from production_rag.ingestion_pipeline.config.config_loader import embedder
 
 load_dotenv(find_dotenv())
 
-qdrant_url = os.environ["QDRANT_URL"]
-qdrant_api_key = os.environ["QDRANT_API_KEY"]
-collection_name = os.environ["COLLECTION_NAME"]
+QDRANT_URL = os.environ["QDRANT_URL"]
+QDRANT_API_KEY = os.environ["QDRANT_API_KEY"]
+COLLECTION_NAME = os.environ["COLLECTION_NAME"]
 
-_vector_db = None
+_SYNC_DB_URL = os.environ["DATABASE_URL"].replace("+psycopg_async", "+psycopg")
 
 
-def _get_vector_db() -> Qdrant:
-    global _vector_db
-    if _vector_db is None:
-        _embedder = FastEmbedEmbedder(
-            id=embedder["model_id"], dimensions=embedder["dimensions"]
+@lru_cache(maxsize=1)
+def get_embedder() -> FastEmbedEmbedder:
+    return FastEmbedEmbedder(
+        id=embedder["model_id"],
+        dimensions=embedder["dimensions"],
+    )
+
+
+@lru_cache(maxsize=1)
+def get_knowledge() -> Knowledge:
+    emb = get_embedder()
+
+    vector_db = Qdrant(
+        collection=COLLECTION_NAME,
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
+        embedder=emb,
+    )
+
+    contents_db = None
+    if _SYNC_DB_URL:
+        contents_db = PostgresDb(
+            db_url=_SYNC_DB_URL,
+            db_schema="rag",
         )
-        _vector_db = Qdrant(
-            collection=collection_name,
-            url=qdrant_url,
-            api_key=qdrant_api_key,
-            embedder=_embedder,
-        )
-        _vector_db.create()
-    return _vector_db
+
+    return Knowledge(
+        name=COLLECTION_NAME,
+        description=f"Managed ingestion for {COLLECTION_NAME}",
+        vector_db=vector_db,
+        contents_db=contents_db,
+    )
 
 
 def ingest_data_to_store(
-    text: str, meta_data: dict = None
-) -> int:
-    """Chunk text and store in Qdrant. Returns the number of chunks ingested."""
-    print(f"Indexing in Qdrant store in collection: {collection_name}")
-
-    base_meta = {"source": collection_name}
+    text: str,
+    meta_data: Optional[dict] = None,
+    content_name: Optional[str] = None,
+) -> None:
+    """
+    Agno-managed ingestion:
+    - uses Knowledge.insert(...)
+    - uses TextReader + SemanticChunking
+    - uses the same embedder for chunking and vector storage
+    """
+    metadata = {"source": collection_name_or_default()}
     if meta_data:
-        base_meta.update(meta_data)
+        metadata.update(meta_data)
 
-    result = (
-        Pipeline()
-        .process_with("text")
-        .chunk_with("semantic", threshold=0.6)
-        .refine_with("overlap", context_size=300)
-        .run(texts=text)
+    emb = get_embedder()
+
+    reader = TextReader(
+        chunking_strategy=SemanticChunking(
+            embedder=emb,               # keep chunking + indexing aligned
+            similarity_threshold=0.6,   # mirrors your current threshold
+            #chunk_size=2000,            # tune as needed
+        ),
     )
 
-    documents = [
-        Document(
-            content=chunk.text,
-            name=collection_name,
-            meta_data=base_meta.copy(),
-        )
-        for chunk in result.chunks
-    ]
+    knowledge = get_knowledge()
 
-    content_hash = hashlib.md5(text.encode()).hexdigest()
-    _get_vector_db().insert(content_hash=content_hash, documents=documents)
-    print(f"Ingested {len(documents)} chunks")
-    return len(documents)
+    knowledge.insert(
+        name=content_name or COLLECTION_NAME,
+        text_content=text,
+        metadata=metadata,
+        reader=reader,
+    )
+
+
+def collection_name_or_default() -> str:
+    return COLLECTION_NAME
