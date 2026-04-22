@@ -15,8 +15,7 @@ from pdf2image import pdfinfo_from_path
 from production_rag.ingestion_pipeline.manifest import Manifest
 from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.pdf_to_image_converter import pdf_to_images
 from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.vision_client import VLLMVisionClient
-# from production_rag.ingestion_pipeline.chunker import ingest_data_to_store
-from production_rag.ingestion_pipeline.chunker2 import ingest_data_to_store
+from production_rag.ingestion_pipeline.chunker import ingest_data_to_store
 from production_rag.ingestion_pipeline.config.config_loader import (
     max_workers, output_store, output_images, vision_prompt,
 )

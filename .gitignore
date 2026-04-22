@@ -33,3 +33,4 @@ Thumbs.db
 /output_store
 **/document-store/*
 !**/document-store/.gitkeep
+.claude
