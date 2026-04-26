@@ -4,7 +4,7 @@ from agno.agent import Agent
 from agno.tools.reasoning import ReasoningTools
 
 from production_rag.agent.knowledge import create_knowledge_base
-from production_rag.agent.prompts import AGENT_INSTRUCTIONS
+from production_rag.agent.prompts import *
 import os
 
 from dotenv import load_dotenv, find_dotenv
@@ -13,7 +13,6 @@ from production_rag.integrations.mlflow import setup_mlflow, get_gateway_llm
 from production_rag.agent.config.config_loader import llm
 from agno.models.openai import OpenAIChat
 from agno.db.sqlite import SqliteDb
-from pathlib import Path
 from agno.memory import MemoryManager
 from agno.models.openai import OpenAIResponses
 from agno.models.deepseek import DeepSeek
@@ -28,9 +27,6 @@ import uuid
 from production_rag.agent.prompts import *
 
 load_dotenv(find_dotenv())
-
-RAG_DIR = Path(os.environ["RAG_DATA_DIR"])
-RAG_DIR.mkdir(exist_ok=True)
 
 db_url = os.environ["DATABASE_URL"]
 
@@ -64,7 +60,7 @@ class RagAgent:
         self.memory_manager = None
         if use_storage or use_memory:
             # self.db = SqliteDb(db_file=str(RAG_DIR / "rag_agent.db"))
-            self.db = AsyncPostgresDb(db_url=db_url, db_schema="agent")
+            self.db = AsyncPostgresDb(db_url=db_url, db_schema="bog_rag")
 
         if use_memory:
             self.memory_manager = MemoryManager(
@@ -126,7 +122,17 @@ class RagAgent:
             agent_kwargs["enable_agentic_memory"] = True
 
 
+        self.report_directory_agent = Agent(
+            name="Report Directory Agent",
+            role="Contain all the report names in the knowledgebase",
+            instructions = [REPORT_DIRECTORY_AGENT],
+            knowledge= self.knowledgebase,
+            enable_agentic_knowledge_filters=True,
+            search_knowledge=True,
+            tools=[ReasoningTools(add_instructions=True)],
+            **agent_kwargs
 
+        )
 
         self.financial_analyst_agent = Agent(
             name="Financial Analyst Agent",
@@ -171,7 +177,8 @@ class RagAgent:
             "respond_directly": False,
             "members": [
                 self.chart_agent,
-                self.financial_analyst_agent
+                self.financial_analyst_agent,
+                self.report_directory_agent,
                
             ],
             "markdown": True,
@@ -192,14 +199,13 @@ class RagAgent:
         
         self.rag_team = Team(**team_kwargs)
 
-    def perform_rag_analysis(self, task: str, stream: bool = True,
-                             show_full_reasoning: bool = True, stream_events: bool = True):
-        
+    async def aperform_rag_analysis(self, task: str, stream: bool = True,
+                                    show_full_reasoning: bool = True, stream_events: bool = True):
         """
-        
+        Performs analysis on the BOG Financial data (async).
+        Use this from FastAPI/AgentOS routes and from `asyncio.run(...)` at the CLI.
         """
-        
-        self.rag_team.print_response(
+        await self.rag_team.aprint_response(
             task,
             stream=stream,
             session_id=self.session_id,

@@ -12,10 +12,13 @@ from pathlib import Path
 
 from pdf2image import pdfinfo_from_path
 
+from agno.db.base import AsyncBaseDb
+from agno.knowledge.content import ContentStatus
+
 from production_rag.ingestion_pipeline.manifest import Manifest
 from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.pdf_to_image_converter import pdf_to_images
 from production_rag.ingestion_pipeline.pdf_ingestion_pipeline.vision_client import VLLMVisionClient
-from production_rag.ingestion_pipeline.chunker import ingest_data_to_store
+from production_rag.ingestion_pipeline.chunker import ingest_data_to_store, get_knowledge
 from production_rag.ingestion_pipeline.config.config_loader import (
     max_workers, output_store, output_images, vision_prompt,
 )
@@ -27,12 +30,33 @@ load_dotenv(find_dotenv())
 _store_path = Path(output_store)
 _images_path = Path(output_images)
 
-_RAG_DIR = Path(os.environ.get("RAG_DATA_DIR", str(Path.home() / ".production-rag")))
-_RAG_DIR.mkdir(exist_ok=True)
+_DEFAULT_RAG_DIR = Path(__file__).resolve().parents[3] / ".production-rag"
+_RAG_DIR = Path(os.environ.get("RAG_DATA_DIR", str(_DEFAULT_RAG_DIR)))
+_RAG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+BATCH_SIZE = 10
 
 
 def _page_json_path(pdf_stem: str, page_num: int) -> Path:
     return _store_path / pdf_stem / f"page_{page_num}.json"
+
+
+def _status_by_name(knowledge) -> dict[str, ContentStatus]:
+    """Return {content_name: status} via agno's public Knowledge.get_content API.
+
+    Automatically scoped to this knowledge via `linked_to=self.name`. Works with
+    any agno contents_db backend. Sync path only — raises on AsyncBaseDb.
+    """
+    if not knowledge.contents_db:
+        return {}
+    if isinstance(knowledge.contents_db, AsyncBaseDb):
+        raise ValueError(
+            "Async contents_db is not supported in the sync ingestion path. "
+            "Configure chunker.get_knowledge() with a sync PostgresDb/SqliteDb."
+        )
+    contents, _ = knowledge.get_content(limit=100000)
+    return {c.name: c.status for c in contents if c.name and c.status is not None}
 
 
 # --- Step 1: Extract ---
@@ -120,9 +144,62 @@ def run_extraction(pdf_dir: Path | None = None) -> dict:
 # --- Step 2: Index ---
 
 def run_indexing() -> dict:
-    """Read cached page JSONs -> chunker -> Qdrant."""
+    """Read cached page JSONs, insert via agno, reconcile manifest with DB state.
+
+    agno's Knowledge.insert() catches write failures and records them as
+    status=FAILED on the contents_db row without raising. Treat the contents_db
+    as the source of truth:
+
+      1. Before inserting, un-mark any manifest page whose DB row says FAILED.
+      2. After every BATCH_SIZE inserts (and once at the end), re-fetch status
+         and mark_indexed only for pages that are now COMPLETED.
+    """
     manifest = Manifest(_store_path)
+    knowledge = get_knowledge()
     totals = {"indexed": 0, "skipped": 0, "failed": 0}
+
+    if not knowledge.contents_db:
+        print(
+            "WARNING: contents_db is None — indexing cannot be verified. "
+            "Pages will be marked indexed on call return; silent agno failures "
+            "will not be detected."
+        )
+
+    # --- Reconcile manifest.indexed against DB state ---
+    status_map = _status_by_name(knowledge)
+    if status_map:
+        for pdf_name in manifest.all_pdfs():
+            for page in list(manifest.indexed_pages(pdf_name)):
+                name = f"{pdf_name}_page_{page}"
+                if status_map.get(name) == ContentStatus.FAILED:
+                    print(f"Re-opening {pdf_name} page {page} (DB status=failed)")
+                    manifest.unmark_indexed(pdf_name, page)
+
+    # --- Insert with periodic batch verification ---
+    pending: list[tuple[str, int]] = []
+
+    def flush_batch() -> None:
+        if not pending:
+            return
+        if not knowledge.contents_db:
+            for pdf, page in pending:
+                manifest.mark_indexed(pdf, page)
+                totals["indexed"] += 1
+            pending.clear()
+            return
+
+        fresh = _status_by_name(knowledge)
+        for pdf, page in pending:
+            name = f"{pdf}_page_{page}"
+            status = fresh.get(name)
+            if status == ContentStatus.COMPLETED:
+                manifest.mark_indexed(pdf, page)
+                totals["indexed"] += 1
+            else:
+                print(f"Indexing failed for {pdf} page {page}: status={status}")
+                manifest.mark_index_failed(pdf, page)
+                totals["failed"] += 1
+        pending.clear()
 
     for pdf_name in manifest.all_pdfs():
         pdf_stem = Path(pdf_name).stem
@@ -136,32 +213,40 @@ def run_indexing() -> dict:
 
         print(f"\nIndexing {len(pages_to_index)} pages for {pdf_name} ({skipped} skipped)")
 
-        for page_num in pages_to_index:
-            json_path = _page_json_path(pdf_stem, page_num)
+        def _insert_page(page_num, _pdf_name=pdf_name, _pdf_stem=pdf_stem):
+            json_path = _page_json_path(_pdf_stem, page_num)
             if not json_path.exists():
-                print(f"Missing JSON for {pdf_name} page {page_num}")
-                totals["failed"] += 1
-                continue
-
+                return page_num, False, f"Missing JSON for {_pdf_name} page {page_num}"
             with open(json_path) as f:
                 page_data = json.load(f)
-
             try:
-                meta = {
-                    "source_file": page_data["source_file"],
-                    "page_number": page_data["page_number"],
-                }
                 ingest_data_to_store(
                     text=page_data["text"],
-                    meta_data=meta,
-                    content_name=f"{pdf_name}_page_{page_num}",
+                    meta_data={
+                        "source_file": page_data["source_file"],
+                        "page_number": page_data["page_number"],
+                    },
+                    content_name=f"{_pdf_name}_page_{page_num}",
                 )
-                manifest.mark_indexed(pdf_name, page_num)
-                totals["indexed"] += 1
+                return page_num, True, None
             except Exception as e:
-                print(f"Error indexing {pdf_name} page {page_num}: {e}")
+                return page_num, False, f"Error indexing {_pdf_name} page {page_num}: {e}"
+
+        # Index sequentially. The ingestion path shares one cached Knowledge
+        # instance and one sync PostgresDb, and Agno's sync table setup is not
+        # safe to hit concurrently from multiple indexing workers.
+        for page_num in pages_to_index:
+            page_num, ok, err = _insert_page(page_num)
+            if ok:
+                pending.append((pdf_name, page_num))
+                if len(pending) >= BATCH_SIZE:
+                    flush_batch()
+            else:
+                if err:
+                    print(err)
                 totals["failed"] += 1
 
+    flush_batch()
     print(f"\nIndexing complete: {totals}")
     return totals
 

@@ -1,265 +1,207 @@
 # Production RAG Pipeline
 
-A complete, production-grade RAG (Retrieval-Augmented Generation) pipeline that you can learn from and adapt. It takes PDF documents, extracts their content using a vision model, stores it in a vector database, and lets you ask questions about it using an LLM — with full tracing, evaluation, and monitoring.
+This repository is a Bank of Ghana RAG application built around two concrete flows:
 
-Built around the Bank of Ghana Annual Report, but the approach works for any PDF-heavy domain.
+1. `src/production_rag/ingestion_pipeline/` extracts PDF pages with a vision model, caches the extracted text as JSON, and indexes the text into Qdrant through Agno `Knowledge`.
+2. `src/production_rag/agent/` assembles a multi-agent Agno team backed by Qdrant and Postgres, then exposes it through AgentOS.
 
-## What is RAG?
+This README set describes the code that is currently checked in, including a few entrypoint mismatches that still exist in the repository.
 
-RAG stands for Retrieval-Augmented Generation. Instead of asking an LLM to answer from memory (which leads to hallucination), you first **retrieve** relevant documents from a database, then **generate** an answer grounded in those documents. The LLM only sees what you give it, so it stays factual.
+## Current Architecture
 
-## How This Pipeline Works
+```text
+PDFs in document-store/
+  -> pdf2image page renders in output_images/
+  -> VLLM vision extraction to output_store/<pdf>/page_N.json
+  -> Agno Knowledge.insert(...)
+  -> Qdrant vector store + Postgres contents_db
 
+User request
+  -> RagAgent
+  -> Agno Team coordinator
+  -> Report Directory Agent / Financial Analyst Agent / Chart Agent
+  -> model response through AgentOS
 ```
-PDF → Images → Vision LLM (text extraction) → Chunking & Embedding → Qdrant Vector Store
-                                                                              |
-                                              User Query → Retrieval + Reranking → LLM → Answer
-                                                                              |
-                                                                    MLflow (traces, eval)
-```
 
-There are three main stages:
+## Project Layout
 
-1. **Ingestion** (getting data into the system — two decoupled steps)
-   - **Extract**: Each PDF page is converted to an image, a vision model reads it and extracts text, and the result is cached as a JSON file
-   - **Index**: Cached text is split into semantic chunks and stored as vectors in Qdrant
-   - If Qdrant is wiped, re-indexing reads from the cache — no expensive vision LLM calls needed
-
-2. **Querying** (asking questions)
-   - Your question gets embedded into the same vector space
-   - The most relevant chunks are retrieved from Qdrant
-   - A reranker scores the chunks and picks the best ones
-   - The LLM reads those chunks and writes a grounded answer
-
-3. **Evaluation** (measuring quality)
-   - A set of questions with known correct answers is run through the pipeline
-   - RAGAS scorers measure whether the answers are faithful, relevant, and well-supported by the retrieved context
-   - Everything is logged to MLflow so you can track quality over time
-
-## Project Structure
-
-```
-production-rag/
+```text
+production-rag-pipeline/
+├── README.md
 ├── pyproject.toml
-├── .env / .env.example
+├── .env.example
+├── docker-compose-prometheus-grafana.yaml
+├── grafana.json
+├── prometheus.yml.example
+├── output_store/                   # extraction cache + manifest.json
 ├── src/
 │   └── production_rag/
-│       ├── cli.py                        # Chat interface
-│       ├── ingestion_pipeline/           # PDF → text → vectors
-│       │   ├── config/                   # YAML config + loader
-│       │   ├── pdf_ingestion_pipeline/   # PDF converter + vision client
-│       │   ├── docx_ingestion_pipeline/  # (future) DOCX extraction
-│       │   ├── document-store/           # Drop your PDFs here
-│       │   ├── manifest.py               # Tracks extraction/indexing state
-│       │   ├── chunker.py                # Semantic chunking + Qdrant storage
-│       │   └── run_pipeline.py           # Pipeline orchestrator
-│       ├── agent/                        # The RAG agent that answers questions
-│       │   └── config/                   # YAML config + loader
-│       ├── integrations/                 # MLflow tracing and LLM routing
-│       │   └── config/                   # YAML config + loader
-│       ├── rag_evaluation/               # Quality measurement with RAGAS
-│       │   └── config/                   # YAML config + loader
-│       └── utils/                        # Helper functions
-├── docker-compose-prometheus-grafana.yaml
-├── prometheus.yml.example
-└── grafana.json
+│       ├── agent/
+│       │   ├── README.md
+│       │   ├── entrypoint.py
+│       │   ├── knowledge.py
+│       │   ├── prompts.py
+│       │   ├── rag_agent.py
+│       │   └── config/
+│       ├── ingestion_pipeline/
+│       │   ├── README.md
+│       │   ├── chunker.py
+│       │   ├── manifest.py
+│       │   ├── run_pipeline.py
+│       │   ├── document-store/
+│       │   ├── pdf_ingestion_pipeline/
+│       │   └── config/
+│       ├── integrations/
+│       │   ├── README.md
+│       │   ├── mlflow.py
+│       │   └── config/
+│       ├── rag_evaluation/
+│       │   ├── README.md
+│       │   ├── ragas_eval.py
+│       │   ├── eval_questions.json
+│       │   └── config/
+│       └── charts/
+└── test_qdrant.py
 ```
 
-Each module has its own README and config:
-- [ingestion_pipeline/](src/production_rag/ingestion_pipeline/README.md) — How PDFs become searchable vectors
-- [agent/](src/production_rag/agent/README.md) — How the RAG agent retrieves and answers
-- [integrations/](src/production_rag/integrations/README.md) — How MLflow tracks everything
-- [utils/](src/production_rag/utils/README.md) — Shared helper functions
+Module docs:
 
-## Tech Stack
+- [ingestion_pipeline](src/production_rag/ingestion_pipeline/README.md)
+- [agent](src/production_rag/agent/README.md)
+- [integrations](src/production_rag/integrations/README.md)
+- [rag_evaluation](src/production_rag/rag_evaluation/README.md)
 
-| What | Tool | Why |
-|------|------|-----|
-| PDF to Image | `pdf2image` (poppler) | Preserves tables/charts that text extractors miss |
-| Text Extraction | Qwen3-VL-8B via vLLM on RunPod | Vision model reads images like a human would |
-| Chunking | `chonkie` (semantic) | Keeps related sentences together, not just fixed-size splits |
-| Embeddings | `BAAI/bge-base-en-v1.5` via FastEmbed | Converts text to vectors for similarity search |
-| Reranker | Cohere `rerank-v3.5` | Re-scores retrieved chunks so the best ones come first |
-| Vector Store | Qdrant Cloud | Stores and searches vectors at scale |
-| Query LLM | OpenAI (direct or via MLflow Gateway) | Generates the final answer from retrieved context |
-| Agent Framework | Agno | Wires the LLM, knowledge base, and tools together |
-| Tracing & Eval | MLflow + RAGAS | Tracks every query and measures answer quality |
-| Monitoring | Prometheus + Grafana | System metrics for Qdrant, vLLM, and infrastructure |
+## Dependencies and Services
 
-## Prerequisites
+The current code expects these external services:
 
-- Python >= 3.11
-- A RunPod instance running vLLM with `Qwen/Qwen3-VL-8B-Instruct` (only needed for extraction) — see [RunPod setup](src/production_rag/ingestion_pipeline/README.md#runpod-setup-vision-model)
-- A Qdrant Cloud cluster (or local Qdrant instance)
-- An OpenAI API key
-- A Cohere API key (for reranking)
-- MLflow server — see [MLflow setup](src/production_rag/integrations/README.md)
-- `poppler-utils` installed on your system (required by `pdf2image`)
+- Qdrant for vector storage
+- Postgres for Agno `contents_db`, team state, and memory
+- A vLLM-compatible vision endpoint for PDF extraction
+- OpenAI for the default chat model and the evaluation judge model
+- Cohere for reranking
+- MLflow for tracing and evaluation logging
 
-### Installing poppler
+The key Python dependencies declared in `pyproject.toml` include `agno`, `qdrant-client`, `fastembed`, `ragas`, `mlflow[genai]`, `cohere`, `pdf2image`, `psycopg[binary]`, and `anthropic`.
+
+## Environment Variables
+
+`.env.example` covers most of the runtime configuration, but the current code also requires `DATABASE_URL`.
+
+Minimum environment for the checked-in code:
+
+```dotenv
+QDRANT_URL=http://localhost:6333
+QDRANT_API_KEY=
+COLLECTION_NAME=bank_of_ghana_reports
+DATABASE_URL=postgresql+psycopg_async://user:password@localhost:5432/production_rag
+VLLM_API_URL=https://your-pod-id-8000.proxy.runpod.net
+OPENAI_API_KEY=
+COHERE_API_KEY=
+MLFLOW_TRACKING_URI=http://localhost:5000
+MLFLOW_EXPERIMENT_NAME=RAG Agent
+```
+
+Notes:
+
+- `DATABASE_URL` is read by both the agent and ingestion code. `chunker.py` derives a sync Postgres URL from it by replacing `+psycopg_async` with `+psycopg`.
+- The default agent model in `src/production_rag/agent/config/config.yaml` is `gpt-5.2`.
+- If you switch the agent to Claude, you will also need the corresponding Anthropic credentials in your environment.
+
+## Setup
 
 ```bash
-# Ubuntu/Debian
+python -m venv .venv
+source .venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e .
+cp .env.example .env
+```
+
+`pdf2image` also requires Poppler:
+
+```bash
+# Ubuntu / Debian
 sudo apt install poppler-utils
 
 # macOS
 brew install poppler
 ```
 
-## Setup
-
-1. **Clone and create a virtual environment**
-
-```bash
-git clone <repo-url>
-cd production-rag
-python -m venv .venv
-source .venv/bin/activate
-```
-
-2. **Install CPU-only PyTorch first** (saves ~2GB vs the default CUDA version)
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-```
-
-3. **Install the project**
-
-```bash
-pip install -e .
-```
-
-4. **Configure environment variables**
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your actual keys:
-
-```
-QDRANT_URL=https://your-cluster.cloud.qdrant.io:6333
-QDRANT_API_KEY=your-qdrant-api-key
-COLLECTION_NAME=your_collection_name
-VLLM_API_URL=https://your-pod-id-8000.proxy.runpod.net
-OPENAI_API_KEY=your-openai-api-key
-COHERE_API_KEY=your-cohere-api-key
-MLFLOW_TRACKING_URI=http://localhost:5000
-MLFLOW_EXPERIMENT_NAME=RAG Agent
-```
-
-5. **Start MLflow** (for tracing and evaluation)
+For MLflow:
 
 ```bash
 mlflow server --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
 ```
 
-Port 5000 avoids conflict with Grafana on 3000. If the port gets stuck:
+## Current Entry Points
+
+### Ingestion
+
+The ingestion commands in the repository are current and point to `production_rag.ingestion_pipeline.run_pipeline`:
 
 ```bash
-lsof -ti :5000 | xargs kill -9
-mlflow server --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
-```
-
-## Usage
-
-### Ingestion — Getting your PDFs into the system
-
-Place PDF files in `src/production_rag/ingestion_pipeline/document-store/`, then run:
-
-```bash
-# Full pipeline (extract + index)
+rag-ingest
 python -m production_rag.ingestion_pipeline.run_pipeline
-
-# Extract only (no Qdrant needed)
 python -m production_rag.ingestion_pipeline.run_pipeline --step extract
-
-# Index only (from cached JSONs, no vision LLM needed)
 python -m production_rag.ingestion_pipeline.run_pipeline --step index
-
-# Re-index after Qdrant wipe
 python -m production_rag.ingestion_pipeline.run_pipeline --clear-indexed
-python -m production_rag.ingestion_pipeline.run_pipeline --step index
 ```
 
-Extraction sends each page to the vision model and caches the result as JSON in `output_store/`. Indexing reads from the cache, chunks the text, and stores vectors in Qdrant. Already-extracted and already-indexed pages are skipped automatically. Failed pages are retried on the next run.
+Place source PDFs in `src/production_rag/ingestion_pipeline/document-store/`.
 
-### Querying — Asking questions
+### Agent Service
+
+The checked-in agent entrypoint is `src/production_rag/agent/entrypoint.py`, which builds a `RagAgent`, registers its team with AgentOS, and serves the app on port `7777` when run as a module:
 
 ```bash
-rag-cli
-# or: python -m production_rag.cli
+python -m production_rag.agent.entrypoint
 ```
 
-This starts an interactive chat. Type a question, and the agent retrieves relevant chunks from Qdrant, reranks them, and generates a grounded answer. Every query is automatically traced in MLflow.
+The packaged `rag-cli` console script in `pyproject.toml` still points to `production_rag.cli:main`, but `src/production_rag/cli.py` is not present in this checkout.
 
-### Evaluation — Measuring answer quality
+### Evaluation
+
+The declared evaluation entrypoints target `src/production_rag/rag_evaluation/ragas_eval.py`:
 
 ```bash
 rag-eval
-# or: python -m production_rag.rag_evaluation.ragas_eval
+python -m production_rag.rag_evaluation.ragas_eval
 ```
 
-Runs 10 questions with known correct answers through the pipeline. RAGAS scores how faithful, relevant, and well-supported each answer is. Results appear in the MLflow UI under the Evaluations tab.
+The evaluation module currently imports `create_rag_agent()` from `production_rag.agent.rag_agent`, while the checked-in agent module exposes a `RagAgent` class instead. The README in `rag_evaluation/` calls that out directly.
 
 ## Monitoring
 
-### Configure Prometheus
+The monitoring files in the repository are still:
 
-```bash
-cp prometheus.yml.example prometheus.yml
-```
+- `docker-compose-prometheus-grafana.yaml`
+- `prometheus.yml.example`
+- `grafana.json`
 
-Edit `prometheus.yml` with your Qdrant credentials and RunPod URL.
-
-### Start the stack
+Start them with:
 
 ```bash
 docker compose -f docker-compose-prometheus-grafana.yaml up -d
 ```
 
-- Grafana: `http://localhost:3000` (admin/admin)
+Default URLs:
+
+- Grafana: `http://localhost:3000`
 - Prometheus: `http://localhost:9090`
 - MLflow: `http://localhost:5000`
 
-### Configure Prometheus as a Grafana data source
+## What Changed From The Older Docs
 
-1. Open Grafana at `http://localhost:3000` and log in (default: admin/admin)
-2. Go to Configuration (gear icon) → Data Sources → "Add data source"
-3. Select Prometheus
-4. Set the URL to `http://prometheus:9090` (they share a Docker network)
-5. Click "Save & Test"
+The old README set described a simpler single-agent CLI flow and older retrieval settings. The checked-in code now uses:
 
-This gives you dashboards for system resources (Node Exporter), database performance (Qdrant), and inference metrics (vLLM).
-
-### Updating the RunPod URL
-
-When you spin up a new RunPod instance, the proxy URL changes:
-
-1. Update `VLLM_API_URL` in `.env`
-2. Update the vLLM target in `prometheus.yml`:
-   ```yaml
-   - job_name: vllm
-     scheme: https
-     metrics_path: /metrics
-     static_configs:
-       - targets:
-         - your-new-pod-id-8000.proxy.runpod.net
-   ```
-3. Restart the stack:
-   ```bash
-   docker compose -f docker-compose-prometheus-grafana.yaml down
-   docker compose -f docker-compose-prometheus-grafana.yaml up -d
-   ```
-
-## Notes
-
-- The vision model runs on RunPod (GPU); everything else runs locally on CPU
-- The Qdrant collection is created automatically on first ingestion
-- Image conversion and page ingestion are both idempotent — safe to rerun
-- To re-ingest from scratch, delete `output_images/` and `output_images/.ingested.log`
+- `RagAgent` and an Agno `Team`, not a documented `create_rag_agent()` factory
+- `snowflake/snowflake-arctic-embed-l` embeddings, not the previously documented BGE model
+- fixed-size chunking during ingestion, not semantic chunking
+- Postgres-backed Agno content tracking during ingestion
+- parallel extraction but single-threaded indexing for reliability on the sync Agno/Postgres path
+- repo-root `output_store/manifest.json` as the extraction and indexing state file
 
 ## License
 
 MIT
-

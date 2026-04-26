@@ -11,6 +11,7 @@ build/
 
 # Environment variables
 .env
+.osragvenv/
 
 # MLflow
 mlflow.db
@@ -34,3 +35,6 @@ Thumbs.db
 **/document-store/*
 !**/document-store/.gitkeep
 .claude
+.production-rag/
+
+

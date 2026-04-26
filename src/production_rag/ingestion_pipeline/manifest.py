@@ -35,6 +35,10 @@ class Manifest:
         entry = self._data.get(pdf_name, {})
         return set(entry.get("indexed", []))
 
+    def index_failed_pages(self, pdf_name: str) -> set[int]:
+        entry = self._data.get(pdf_name, {})
+        return set(entry.get("index_failed", []))
+
     def pages_needing_extraction(self, pdf_name: str, total_pages: int) -> list[int]:
         """Pages that have not been successfully extracted yet."""
         succeeded = self.succeeded_pages(pdf_name)
@@ -59,9 +63,11 @@ class Manifest:
                     "succeeded": [],
                     "failed": [],
                     "indexed": [],
+                    "index_failed": [],
                 }
             else:
                 self._data[pdf_name]["total_pages"] = total_pages
+                self._data[pdf_name].setdefault("index_failed", [])
             self._flush()
 
     def mark_succeeded(self, pdf_name: str, page_number: int) -> None:
@@ -88,7 +94,27 @@ class Manifest:
             if page_number not in entry["indexed"]:
                 entry["indexed"].append(page_number)
                 entry["indexed"].sort()
+            # A successful retry clears any prior indexing failure mark.
+            index_failed = entry.setdefault("index_failed", [])
+            if page_number in index_failed:
+                index_failed.remove(page_number)
             self._flush()
+
+    def mark_index_failed(self, pdf_name: str, page_number: int) -> None:
+        with self._lock:
+            entry = self._data[pdf_name]
+            index_failed = entry.setdefault("index_failed", [])
+            if page_number not in index_failed:
+                index_failed.append(page_number)
+                index_failed.sort()
+            self._flush()
+
+    def unmark_indexed(self, pdf_name: str, page_number: int) -> None:
+        with self._lock:
+            entry = self._data.get(pdf_name)
+            if entry and page_number in entry["indexed"]:
+                entry["indexed"].remove(page_number)
+                self._flush()
 
     def clear_indexed(self, pdf_name: str | None = None) -> None:
         """Clear indexed list for one PDF, or all PDFs."""

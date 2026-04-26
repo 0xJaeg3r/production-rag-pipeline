@@ -1,95 +1,93 @@
 # Evaluation
 
-How do you know if your RAG pipeline is actually working well? You can't just eyeball answers — you need automated, repeatable measurement. This module runs a set of questions with known correct answers through the pipeline and scores the results using RAGAS.
+This package contains the repository's MLflow + RAGAS evaluation script and the static question set it uses.
 
-## Why evaluate?
+## Current Files
 
-A RAG pipeline can fail in several ways:
-- The right documents weren't retrieved (retrieval problem)
-- The right documents were retrieved but buried under irrelevant ones (ranking problem)
-- The LLM ignored the context and made something up (faithfulness problem)
-- The answer is correct but doesn't address the actual question (relevance problem)
+### [ragas_eval.py](ragas_eval.py)
 
-Each failure mode needs a different fix. RAGAS scorers tell you exactly which part is breaking.
+This is the evaluation entrypoint declared by `pyproject.toml`.
 
-## How it works
+Current responsibilities:
 
-```
-eval_questions.json → run each question through the agent → capture traces
-    → attach the known correct answer to each trace
-    → run RAGAS scorers against the traces
-    → results appear in MLflow UI → Evaluations tab
-```
+- load questions from `eval_questions.json`
+- initialize MLflow with `setup_mlflow(autolog=False)`
+- run each question through the agent
+- attach reference answers with `mlflow.log_expectation(...)`
+- evaluate traces with RAGAS scorers
 
-1. Load questions and correct answers from `data/eval_questions.json`
-2. For each question:
-   - Retrieve documents from Qdrant (in a separate retriever span so RAGAS can see what was retrieved)
-   - Run the agent to generate an answer
-   - Attach the correct answer to the trace via `mlflow.log_expectation()`
-   - Save the full trace
-3. Pass all traces to `mlflow.genai.evaluate()` with RAGAS scorers
-4. View results in the MLflow UI under the Evaluations tab
+Current scorer list:
 
-## What the scorers measure
+- `Faithfulness`
+- `AnswerRelevancy`
+- `ContextPrecision`
+- `ContextRecall`
+- `ContextEntityRecall`
 
-| Scorer | Question it answers | Needs a correct answer? |
-|--------|-------------------|------------------------|
-| **Faithfulness** | Did the agent only use information from the retrieved context, or did it make things up? | No |
-| **Answer Relevancy** | Does the answer actually address the question that was asked? | No |
-| **Context Precision** | Were the retrieved chunks relevant, or was there a lot of noise? | Yes |
-| **Context Recall** | Did the retrieved chunks contain all the information needed to answer correctly? | Yes |
-| **Context Entity Recall** | Do specific entities (names, numbers, dates) from the correct answer appear in the retrieved context? | Yes |
+The judge model is configured in `config/config.yaml` as:
 
-All scorers use `gpt-4o-mini` as the judge — a separate LLM that evaluates the quality of your RAG pipeline's output.
-
-### Reading the scores
-
-- **1.0** = perfect. The retrieval/answer is as good as it can be.
-- **0.0** = complete failure. Nothing useful was retrieved or generated.
-- In practice, you'll see scores between 0.5 and 1.0. Focus on the lowest scores first — they tell you where to improve.
-
-If **Faithfulness** is low, the LLM is hallucinating. Tighten the system prompt or lower the temperature.
-If **Context Recall** is low, the retriever isn't finding the right chunks. Check your chunking strategy or embedding model.
-If **Context Precision** is low, too many irrelevant chunks are being retrieved. The reranker may need tuning.
-
-## Eval questions
-
-`data/eval_questions.json` contains 10 question/answer pairs covering a range of difficulty:
-- Simple factual lookups (inflation targets, establishment date)
-- Table extraction (NPL ratios, transaction volumes)
-- Multi-hop reasoning (tracing monetary policy decisions across the year and connecting them to financial statements)
-- Accounting restatements (IFRS treatments, restated figures)
-
-### Adding your own questions
-
-Add entries to the JSON array with `"question"` and `"reference"` keys:
-
-```json
-{
-    "question": "What was the Bank's Medium-Term Inflation Target...?",
-    "reference": "The Medium-Term Inflation Target was 8±2%. Actual Headline Inflation was 23.8%."
-}
+```yaml
+judge_model: "openai:/gpt-4o-mini"
 ```
 
-The eval script picks up any question with a `"reference"` key and uses it for the reference-based scorers.
+### [eval_questions.json](eval_questions.json)
 
-## Usage
+This file is the default question source. `DEFAULT_QUESTIONS_PATH` points to it directly from `ragas_eval.py`.
+
+Each item is expected to contain:
+
+- `question`
+- optional `reference`
+
+Reference answers are used for the reference-based RAGAS scorers.
+
+## Entry Points
+
+The current repository exposes:
 
 ```bash
-# Via console script
 rag-eval
-
-# Via module
-python -m production_rag.eval.ragas_eval
-
-# With a custom questions file
-python -c "from production_rag.eval.ragas_eval import run_evaluation; run_evaluation('path/to/questions.json')"
+python -m production_rag.rag_evaluation.ragas_eval
 ```
 
-## Implementation notes
+For a custom file:
 
-- **Autolog is off during eval** — the eval script builds traces manually. Autolog would create duplicate traces that confuse the scorers. See [integrations/README.md](../integrations/README.md) for the full explanation.
-- **`log_expectation()` must come before `get_trace()`** — the correct answer is attached to the trace via `log_expectation()`. If you fetch the trace first, it won't include the expected answer and reference scorers will fail.
-- **Sequential execution** — scorers run one at a time (`MAX_WORKERS=1`) to avoid rate-limiting the judge LLM.
-- **`nest_asyncio`** — applied at module load to prevent event loop errors from httpx cleanup between RAGAS scorer calls.
-- **litellm callback clearing** — prevents a race condition where `genai.evaluate()` re-enables autolog internally and hangs the script.
+```bash
+python -c "from production_rag.rag_evaluation.ragas_eval import run_evaluation; run_evaluation('path/to/questions.json')"
+```
+
+## Important Current Limitation
+
+`ragas_eval.py` currently imports:
+
+```python
+from production_rag.agent.rag_agent import create_rag_agent
+```
+
+but the checked-in `src/production_rag/agent/rag_agent.py` defines `RagAgent` and does not expose `create_rag_agent()`.
+
+So the evaluation README can accurately describe the module and its declared entrypoints, but the current snapshot still has an unresolved interface mismatch between the evaluation code and the agent module.
+
+## Implementation Details In The Current File
+
+- `nest_asyncio.apply()` runs at import time
+- retrieval spans are built with `@mlflow.trace(span_type=SpanType.RETRIEVER)`
+- evaluation forces sequential execution through:
+
+```python
+os.environ["MLFLOW_GENAI_EVAL_MAX_WORKERS"] = "1"
+os.environ["MLFLOW_GENAI_EVAL_MAX_SCORER_WORKERS"] = "1"
+```
+
+- LiteLLM callbacks are cleared before `mlflow.genai.evaluate(...)`
+
+## Data Flow
+
+```text
+eval_questions.json
+  -> run_evaluation(...)
+  -> agent response + retriever trace
+  -> MLflow trace objects
+  -> mlflow.genai.evaluate(...)
+  -> results logged to MLflow
+```

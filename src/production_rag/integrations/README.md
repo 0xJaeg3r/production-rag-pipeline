@@ -1,79 +1,69 @@
 # Integrations
 
-This module connects the pipeline to MLflow for tracing, prompt management, and LLM routing.
+This package contains the current MLflow helper code for the repository. It is focused on three responsibilities:
 
-## Why MLflow?
+- setting the tracking URI and experiment
+- optionally enabling Agno autologging
+- creating an OpenAI-compatible client that routes through the MLflow AI Gateway
 
-When you run a RAG pipeline, a lot happens between the user's question and the final answer — embedding, retrieval, reranking, LLM calls. If something goes wrong (bad answers, slow responses, hallucinations), you need to see what happened at each step. MLflow records the full trace of every query so you can inspect it later.
+## File
 
-It also gives you:
-- **AI Gateway** — route LLM calls through MLflow instead of calling OpenAI directly, so you manage API keys in one place
-- **Prompt Registry** — version your prompts and update them without changing code
-- **Evaluation** — run RAGAS scorers and see results in a dashboard
+### [mlflow.py](mlflow.py)
 
-## Module
+The module currently exports three helpers.
 
-### `mlflow.py`
-Three functions:
+#### `setup_mlflow(autolog: bool = False) -> None`
 
-- **`setup_mlflow(autolog)`** — Points MLflow at your server and experiment. If `autolog=True`, every agent query is automatically traced with zero extra code.
+Current behavior:
 
-- **`get_mlflow_prompt(prompt_uri, fallback)`** — Pulls a prompt from the MLflow Prompt Registry. If the registry is down, it falls back to the hardcoded string so your app keeps working.
+- reads `MLFLOW_TRACKING_URI` from the environment
+- reads the experiment name from `config/config.yaml`
+- calls `mlflow.agno.autolog()` only when `autolog=True`
+- catches exceptions and falls back to running without tracing
 
-- **`get_gateway_llm(endpoint)`** — Returns an LLM that routes through the MLflow AI Gateway instead of calling OpenAI directly. This lets you manage API keys and rate limits centrally in MLflow.
+#### `get_mlflow_prompt(prompt_uri: str, fallback: str) -> str`
+
+Current behavior:
+
+- loads a prompt through `mlflow.genai.load_prompt(...)`
+- returns `prompt.format()`
+- falls back to the provided string if the registry lookup fails
+
+#### `get_gateway_llm(endpoint: str | None = None) -> OpenAILike`
+
+Current behavior:
+
+- defaults the endpoint from `config/config.yaml`
+- points `base_url` at `"{MLFLOW_TRACKING_URI}/gateway/mlflow/v1"`
+- returns an `agno.models.openai.OpenAILike` instance
 
 ## Configuration
 
-| Env Var | Default | What it does |
-|---------|---------|-------------|
-| `MLFLOW_TRACKING_URI` | `http://localhost:5000` | Where your MLflow server runs |
-| `MLFLOW_EXPERIMENT_NAME` | `RAG Agent` | Groups all traces and runs together |
+`config/config.yaml` currently contains:
 
-## Switching between direct LLM and Gateway
-
-In `agent/rag_agent.py`, you can toggle between calling OpenAI directly or routing through MLflow:
-
-```python
-# Direct — your app talks to OpenAI
-llm = OpenAIChat(id="gpt-4o", temperature=0.4, api_key=llm_cfg.api_key)
-
-# Gateway — your app talks to MLflow, MLflow talks to OpenAI
-llm = get_gateway_llm("open-ai")
+```yaml
+mlflow:
+  experiment_name: "RAG Agent"
+  gateway_endpoint: "open-ai"
 ```
 
-Same for prompts:
+The helper loader exposes:
 
-```python
-# Hardcoded in code
-active_prompt = SYSTEM_PROMPT
+- `mlflow_experiment_name`
+- `gateway_endpoint`
 
-# Pulled from MLflow (can update without redeploying)
-active_prompt = get_mlflow_prompt("prompts:/bog_financial_analyst/1", SYSTEM_PROMPT)
-```
+## Where The Current Code Uses This Package
 
-## What you see in the MLflow UI
+- `src/production_rag/agent/rag_agent.py` imports `setup_mlflow` and `get_gateway_llm`
+- `src/production_rag/rag_evaluation/ragas_eval.py` calls `setup_mlflow(autolog=False)`
 
-After running `rag-cli` and asking a question, open `http://localhost:5000`:
+## Important Current Behavior
 
-- **Experiments tab** — Groups all runs and traces for the "RAG Agent" experiment
-- **Traces tab** — The full chain for each query: user question → knowledge search → LLM call → answer. Shows latency, token usage, and the actual prompts/responses. This is where you debug why the agent gave a certain answer.
-- **Runs tab** — Aggregated metrics (tokens, latency) per interaction. Useful for comparing performance across queries.
-- **AI Gateway tab** — Configured endpoints and which provider/model they route to
-- **Prompt Registry tab** — Versioned prompts that you can update without touching code
+The older docs described MLflow tracing as the default interactive path. That is not what the checked-in code does today.
 
-## Autolog explained
+As currently written:
 
-Autolog is a hook that MLflow registers into Agno. Once enabled, every time the agent runs a query, MLflow automatically records a trace of everything that happened — the question, the knowledge search, the LLM call, and the answer. You don't write any tracing code; it just happens.
+- `RagAgent` only calls `setup_mlflow(...)` when it is constructed with `evaluation=True`
+- the evaluation module calls `setup_mlflow(autolog=False)` and then manages traces explicitly with decorators and MLflow trace APIs
 
-**Turn it ON** for normal use (CLI, interactive queries) — you get free tracing of every interaction.
-
-**Turn it OFF** for evaluation — the eval script builds its own traces manually so it has precise control over what goes into each trace. If autolog is also running, you get duplicate or garbled traces that break the RAGAS scorers.
-
-| Situation | Setting | Why |
-|---|---|---|
-| Interactive / CLI use | `setup_mlflow(autolog=True)` | Free automatic tracing |
-| Running evaluation | `setup_mlflow(autolog=False)` | Eval builds traces manually |
-
-### The litellm conflict (if you hit a hang during eval)
-
-`mlflow.genai.evaluate()` quietly re-enables autolog internally, even if you turned it off. This creates a race condition in litellm's async workers that hangs the eval script. The fix is to clear all litellm callbacks before calling `evaluate()` — this is already done in `eval/ragas_eval.py`. If you see a hang at 0%, this is why.
+So this package still provides the tracing hooks, but the repository does not currently enable Agno autologging for the normal AgentOS entrypoint by default.

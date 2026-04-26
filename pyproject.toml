@@ -31,7 +31,8 @@ dependencies = [
     "openinference-instrumentation-agno>=0.1.27",
     "cohere",
     "fastapi[standard]",
-    "psycopg[binary]"
+    "psycopg[binary]",
+    "anthropic"
 ]
 
 [project.scripts]

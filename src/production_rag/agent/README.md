@@ -1,44 +1,121 @@
 # Agent
 
-This is the "read" side of the RAG pipeline. When a user asks a question, the agent retrieves relevant chunks from the vector database, reranks them, and uses an LLM to generate a grounded answer.
+This package contains the current read path for the repository: a `RagAgent` wrapper that builds a multi-agent Agno `Team`, mounts it into AgentOS, and answers questions against the Bank of Ghana knowledge base.
 
-## How retrieval and reranking work
+## What The Current Code Builds
 
-When you ask a question, two things happen:
+`rag_agent.py` no longer exposes the older `create_rag_agent()` function described in previous docs. The checked-in implementation centers on the `RagAgent` class.
 
-1. **Retrieval** — Your question is converted into a vector (using the same embedding model from ingestion) and compared against all stored vectors in Qdrant. The top 10 most similar chunks are returned. This is fast but approximate — it finds chunks that are semantically close to your question.
+At initialization time, `RagAgent` currently:
 
-2. **Reranking** — The retrieved chunks are passed through a Cohere reranker, which is a separate model trained specifically to score how relevant a document is to a query. It's more accurate than vector similarity alone but slower, so we only run it on the top 10 results and keep the best 5. This two-stage approach (fast retrieval, then precise reranking) gives you both speed and accuracy.
+- selects a model with `_get_model(...)`
+- creates the shared knowledge base through `create_knowledge_base()`
+- optionally connects to Postgres for storage and memory
+- creates three specialized agents
+- assembles them into a coordinating Agno `Team`
 
-## How the agent generates answers
+The team members are:
 
-The agent receives the reranked chunks as context along with your question. It's instructed to only use the provided context (no outside knowledge), cite specific sections, and distinguish between Bank and Group figures. If the context doesn't contain the answer, it says so instead of making something up.
+- `Report Directory Agent`
+- `Financial Analyst Agent`
+- `Chart Agent`
 
-## Modules
+Those prompts live in [prompts.py](prompts.py) and are specific to Bank of Ghana annual reports from 2013 through 2024.
 
-### `prompts.py`
-Contains the system prompt and a list of 12 instructions that tell the agent how to behave. These are specific to financial analysis of the Bank of Ghana report — you'd modify these for other domains. The instructions cover things like:
-- Pay attention to units (millions vs billions, GH¢ vs US$)
-- Distinguish between Bank (standalone) and Group (Bank + subsidiaries) figures
-- Watch for restated 2023 figures
-- Read tables carefully (headers, rows, footnotes)
-- Always cite the source section or table
+## Files
 
-### `knowledge.py`
-Builds the knowledge base from config. This wires together the embedder, reranker, and Qdrant connection into a single `Knowledge` object that the agent uses for retrieval.
+### [rag_agent.py](rag_agent.py)
 
-The embedder model here **must match** the one used during ingestion. Both read from the same `EmbedderConfig` in `config.py`, so they're always in sync.
+Defines `RagAgent`.
 
-### `rag_agent.py`
-The main entry point. `create_rag_agent()` wires everything together: sets up MLflow tracing, creates the knowledge base, configures the LLM, and returns a ready-to-use Agno `Agent`.
+Important behavior in the current file:
 
-Nothing happens when you import this module — the agent is only created when you call the function. This avoids errors and side effects when importing in different contexts (tests, scripts, etc.).
+- default model name is `gpt-5.2`
+- model dispatch supports OpenAI, Claude, DeepSeek, and a LiteLLM fallback
+- team state and memory use `AsyncPostgresDb` with schema `bog_rag`
+- `perform_rag_analysis(...)` delegates to `self.rag_team.print_response(...)`
+- MLflow setup is only invoked when `evaluation=True`
 
-## Usage
+### [knowledge.py](knowledge.py)
 
-```python
-from production_rag.agent.rag_agent import create_rag_agent
+Builds the shared `Knowledge` object used by the team.
 
-agent = create_rag_agent()
-agent.print_response("What was the NPL ratio in 2024?")
+Current implementation details:
+
+- embedder: `snowflake/snowflake-arctic-embed-l`
+- reranker: Cohere `rerank-v3.5`
+- vector store: Qdrant
+- content store: `AsyncPostgresDb`
+- `max_results=50`
+
+This module requires `QDRANT_URL`, `QDRANT_API_KEY`, `COLLECTION_NAME`, and `DATABASE_URL` in the environment.
+
+### [prompts.py](prompts.py)
+
+Contains the prompt strings for:
+
+- `REPORT_DIRECTORY_AGENT`
+- `FINANCIAL_ANALYST_AGENT`
+- `CHART_AGENT`
+- `FINANCIAL_AGENT_MANAGER_PROMPT`
+
+These prompts assume a fixed corpus of Bank of Ghana annual reports and hard-code the known filenames for 2013 to 2024.
+
+### [entrypoint.py](entrypoint.py)
+
+This is the checked-in runtime entrypoint for the agent service.
+
+It currently:
+
+- instantiates `RagAgent()`
+- registers `rag_agent.rag_team` with `AgentOS`
+- exposes `app = agent_os.get_app()`
+- serves on port `7777` when run directly
+
+Run it with:
+
+```bash
+python -m production_rag.agent.entrypoint
 ```
+
+## Current Runtime Shape
+
+```text
+request
+  -> AgentOS
+  -> Financial Analyst Team
+     -> Report Directory Agent
+     -> Financial Analyst Agent
+     -> Chart Agent
+  -> shared Qdrant knowledge base
+  -> shared Postgres-backed state and memory
+```
+
+## Configuration
+
+`config/config.yaml` currently contains:
+
+```yaml
+llm:
+  model_id: "gpt-5.2"
+  temperature: 0.2
+
+embedder:
+  model_id: "snowflake/snowflake-arctic-embed-l"
+  dimensions: 1024
+
+reranker:
+  model: "rerank-v3.5"
+  top_n: 8
+```
+
+The current code reads the embedder and reranker configuration from this file, but `RagAgent` itself hard-codes the default constructor argument `model_name="gpt-5.2"` rather than reading `llm.model_id` directly.
+
+## Notes On Drift Inside The Codebase
+
+Other parts of the repository still refer to an older API:
+
+- `pyproject.toml` declares `rag-cli = "production_rag.cli:main"`, but `production_rag.cli` is not present in this checkout.
+- `src/production_rag/rag_evaluation/ragas_eval.py` imports `create_rag_agent()` from this package, but the current file defines `RagAgent` instead.
+
+This README reflects the code as it exists now rather than the older interface those files still expect.
