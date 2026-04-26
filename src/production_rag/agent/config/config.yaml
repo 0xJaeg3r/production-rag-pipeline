@@ -1,6 +1,6 @@
 llm:
   model_id: "gpt-5.2"
-  temperature: 0.2
+  #temperature: 0.2
 
 embedder:
   model_id: "snowflake/snowflake-arctic-embed-l"
@@ -8,4 +8,5 @@ embedder:
 
 reranker:
   model: "rerank-v3.5"
-  top_n: 8
+  top_n: 15
+

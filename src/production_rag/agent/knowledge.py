@@ -35,4 +35,4 @@ def create_knowledge_base() -> Knowledge:
 
     contents_db = AsyncPostgresDb(db_url=os.environ["DATABASE_URL"], db_schema="bog_rag")
 
-    return Knowledge(vector_db=vector_db, contents_db=contents_db, max_results=40)
+    return Knowledge(vector_db=vector_db, contents_db=contents_db, max_results=50)
